@@ -196,25 +196,41 @@ def hex_rgba(hex_color: str, alpha: float) -> str:
 # ==============================================================================
 #  PLOTLY DARK LAYOUT DEFAULTS
 # ==============================================================================
-PLOTLY_DARK = dict(
+# Only truly constant, never-overridden keys live here.
+# legend / margin / hovermode are applied inside apply_dark() as defaults
+# so callers can freely override them without "multiple values" conflicts.
+PLOTLY_DARK_BASE = dict(
     paper_bgcolor = "#0a1628",
     plot_bgcolor  = "#0d1f3c",
     font          = dict(family="'Exo 2', sans-serif", color="#CFD8DC"),
     title_font    = dict(family="'Rajdhani', sans-serif", color="#E0F7FA", size=16),
-    legend        = dict(bgcolor="rgba(13,31,60,0.85)", bordercolor="#1a3a5c",
-                         font=dict(color="#CFD8DC", size=11),
-                         orientation="h", yanchor="bottom", y=-0.28),
-    margin        = dict(t=55, b=70, l=65, r=20),
-    hovermode     = "x unified",
 )
 
-# Axis style dict – applied via update_xaxes/update_yaxes so it never
-# collides with custom xaxis= / yaxis= kwargs in update_layout.
-DARK_AXIS = dict(color="#90CAF9", gridcolor="#1a3a5c", zerolinecolor="#1a3a5c")
+# Keep PLOTLY_DARK as an alias so existing **PLOTLY_DARK spreads still work.
+PLOTLY_DARK = PLOTLY_DARK_BASE
 
-def apply_dark(fig, title="", xlab="", ylab=""):
-    """Apply dark theme. Uses update_xaxes/update_yaxes – safe for subplots."""
-    fig.update_layout(**PLOTLY_DARK, title_text=title)
+DARK_LEGEND = dict(
+    bgcolor="rgba(13,31,60,0.85)", bordercolor="#1a3a5c",
+    font=dict(color="#CFD8DC", size=11),
+    orientation="h", yanchor="bottom", y=-0.28,
+)
+DARK_MARGIN   = dict(t=55, b=70, l=65, r=20)
+DARK_AXIS     = dict(color="#90CAF9", gridcolor="#1a3a5c", zerolinecolor="#1a3a5c")
+
+def apply_dark(fig, title="", xlab="", ylab="",
+               legend=None, margin=None, hovermode="x unified"):
+    """
+    Apply the dark theme. All keys that callers might want to override
+    (legend, margin, hovermode) are explicit parameters here so they are
+    NEVER spread via **dict – eliminating all 'multiple values' errors.
+    """
+    fig.update_layout(
+        **PLOTLY_DARK_BASE,
+        title_text = title,
+        hovermode  = hovermode,
+        legend     = legend  if legend  is not None else DARK_LEGEND,
+        margin     = margin  if margin  is not None else DARK_MARGIN,
+    )
     fig.update_xaxes(**DARK_AXIS, title_text=xlab)
     fig.update_yaxes(**DARK_AXIS, title_text=ylab)
     return fig
@@ -723,7 +739,7 @@ with tabs[3]:
                     hovertemplate=f"<b>{site}</b><br>{agg_by}: %{{customdata}}<br>Value: %{{y:.3f}}<extra></extra>"
                 ))
         fig.update_layout(
-            **PLOTLY_DARK,
+            **PLOTLY_DARK_BASE,
             title_text=f"{'Box' if plot_type=='box' else 'Violin'} Plot – {sel_param} by {agg_by}",
         )
         fig.update_xaxes(
@@ -927,11 +943,13 @@ with tabs[6]:
                 row=r, col=c)
 
     fig_seas.update_layout(
-        **PLOTLY_DARK,
+        **PLOTLY_DARK_BASE,
         title_text=f"Seasonal Diurnal Patterns – {sel_param}",
         height=600,
+        hovermode="x unified",
         legend=dict(orientation="h", y=-0.12, bgcolor="rgba(13,31,60,0.85)",
                     font=dict(color="#CFD8DC")),
+        margin=DARK_MARGIN,
     )
     for i in range(1,5):
         fig_seas.update_xaxes(
@@ -970,11 +988,13 @@ with tabs[6]:
                 row=r, col=c)
 
     fig_smon.update_layout(
-        **PLOTLY_DARK,
+        **PLOTLY_DARK_BASE,
         title_text=f"Seasonal Monthly Patterns – {sel_param}",
         height=600,
+        hovermode="x unified",
         legend=dict(orientation="h", y=-0.12, bgcolor="rgba(13,31,60,0.85)",
                     font=dict(color="#CFD8DC")),
+        margin=DARK_MARGIN,
     )
     for i in range(1,5):
         fig_smon.update_xaxes(**DARK_AXIS, row=(i-1)//2+1, col=(i-1)%2+1)
@@ -996,7 +1016,7 @@ with tabs[7]:
     all_params = sorted(ad["Parameter"].unique())
     all_sites  = sorted(ad["Sitename"].unique())
 
-    wc1, wc2, wc3 = st.columns(3)
+    wc1, wc2, wc3, wc4, wc5 = st.columns(5)
     wr_site    = wc1.selectbox("Site", all_sites, key="wr_site")
     wr_ws_par  = wc2.selectbox("Wind Speed param",
         all_params, index=next((i for i,p in enumerate(all_params)
@@ -1005,6 +1025,8 @@ with tabs[7]:
         all_params, index=next((i for i,p in enumerate(all_params)
             if re.search("wind.?dir|wdir|^wd$|direction",p,re.I)),
             min(1,len(all_params)-1)), key="wr_wd_p")
+    wr_ws_unit   = wc4.text_input("Wind Speed unit",  value="m/s",  key="wr_ws_unit")
+    wr_poll_unit = wc5.text_input(f"{sel_param} unit", value="ppb", key="wr_poll_unit")
 
     gen_wr = st.button("🌬️ Generate Wind Roses", use_container_width=False)
 
@@ -1018,50 +1040,70 @@ with tabs[7]:
         df["season"] = get_season(df["datetime"])
         return df
 
-    def plotly_windrose(df_wind, title="Wind Rose", n_spd_bins=6, n_dir_bins=16):
-        """Build a Plotly polar bar wind rose from ws/wd columns."""
+    def plotly_windrose(df_wind, title="Wind Rose", n_spd_bins=6, n_dir_bins=16,
+                        ws_unit="m/s"):
+        """Build a Plotly polar bar wind rose. Radial axis = % frequency."""
         if len(df_wind) < 10:
-            return go.Figure().update_layout(title_text="Not enough data", **PLOTLY_DARK)
-
+            return go.Figure().update_layout(title_text="Not enough data",
+                                             **PLOTLY_DARK_BASE)
         dir_bins   = np.linspace(0, 360, n_dir_bins+1)
         dir_labels = [f"{v:.0f}°" for v in (dir_bins[:-1]+dir_bins[1:])/2]
         spd_max    = df_wind["ws"].quantile(0.99)
         spd_bins   = np.linspace(0, spd_max, n_spd_bins+1)
-        spd_labels = [f"{spd_bins[i]:.1f}–{spd_bins[i+1]:.1f} m/s"
+        spd_labels = [f"{spd_bins[i]:.2g}–{spd_bins[i+1]:.2g} {ws_unit}"
                       for i in range(n_spd_bins)]
 
-        df_wind    = df_wind.copy()
+        df_wind = df_wind.copy()
         df_wind["dir_bin"] = pd.cut(df_wind["wd"], bins=dir_bins,
                                     labels=dir_labels, include_lowest=True)
         df_wind["spd_bin"] = pd.cut(df_wind["ws"], bins=spd_bins,
                                     labels=spd_labels, include_lowest=True)
 
-        total   = len(df_wind)
-        colors  = px.colors.sequential.YlOrRd[1:]  # warm gradient
-        fig     = go.Figure()
+        total  = len(df_wind)
+        colors = px.colors.sequential.YlOrRd[1:]
+        fig    = go.Figure()
         for i, sl in enumerate(spd_labels):
             sub    = df_wind[df_wind["spd_bin"]==sl]
-            counts = sub.groupby("dir_bin", observed=True).size().reindex(dir_labels, fill_value=0)
-            pct    = (counts / total * 100).values
+            cnts   = sub.groupby("dir_bin", observed=True).size().reindex(dir_labels, fill_value=0)
+            n_sl   = int(cnts.sum())
+            pct    = (cnts / total * 100).values
             fig.add_trace(go.Barpolar(
-                r=pct, theta=dir_labels, name=sl,
+                r=pct, theta=dir_labels,
+                name=f"{sl}  (n={n_sl:,})",
                 marker_color=colors[i % len(colors)],
                 marker_line_color="#0a1628", marker_line_width=0.5,
-                opacity=0.88))
+                opacity=0.88,
+                hovertemplate=(
+                    "<b>Dir:</b> %{theta}<br>"
+                    "<b>Freq:</b> %{r:.1f}%<br>"
+                    f"<b>Speed:</b> {sl}<br>"
+                    f"<b>n (bin):</b> %{{customdata}}<extra></extra>"
+                ),
+                customdata=cnts.values,
+            ))
 
         fig.update_layout(
-            **PLOTLY_DARK,
-            title_text=title,
+            **PLOTLY_DARK_BASE,
+            title=dict(
+                text=f"{title}<br><sup style='color:#78909C'>N = {total:,} valid observations</sup>",
+                font=dict(color="#E0F7FA", family="Rajdhani,sans-serif", size=15)),
             polar=dict(
                 bgcolor="#0d1f3c",
-                angularaxis=dict(direction="clockwise", tickfont=dict(color="#90CAF9",size=10),
+                angularaxis=dict(direction="clockwise",
+                                 tickfont=dict(color="#90CAF9", size=10),
                                  linecolor="#1a3a5c", gridcolor="#1a3a5c"),
-                radialaxis=dict(ticksuffix="%", tickfont=dict(color="#90CAF9",size=9),
-                               gridcolor="#1a3a5c", linecolor="#1a3a5c")),
+                radialaxis=dict(ticksuffix="%",
+                                tickfont=dict(color="#90CAF9", size=9),
+                                gridcolor="#1a3a5c", linecolor="#1a3a5c",
+                                title=dict(text="Frequency (%)",
+                                           font=dict(color="#90CAF9", size=9)))),
             showlegend=True,
-            legend=dict(font=dict(color="#CFD8DC",size=10), bgcolor="rgba(13,31,60,0.8)",
-                        title=dict(text="Wind Speed", font=dict(color="#00E5FF"))),
-            height=520,
+            legend=dict(font=dict(color="#CFD8DC", size=10),
+                        bgcolor="rgba(13,31,60,0.8)",
+                        title=dict(text=f"Wind Speed ({ws_unit})",
+                                   font=dict(color="#00E5FF"))),
+            margin=dict(t=70, b=30, l=30, r=30),
+            height=540,
         )
         return fig
 
@@ -1073,19 +1115,25 @@ with tabs[7]:
             # Overall rose
             st.markdown(f"#### Overall Wind Rose – {wr_site}")
             st.plotly_chart(plotly_windrose(wind_df,
-                f"Wind Rose – {wr_site} | All Data | n={len(wind_df):,}"),
+                f"Wind Rose – {wr_site} | All Data",
+                ws_unit=wr_ws_unit),
                 use_container_width=True)
 
             # ── 4-Season 2×2 panel ────────────────────────────────────────
             st.markdown(f"#### Seasonal Wind Roses – {wr_site} (2×2 Panel)")
+            seas_titles = [
+                f"<b>{s}</b>  <sup>n={len(wind_df[wind_df['season']==s]):,}</sup>"
+                for s in SEASONS
+            ]
             fig4 = make_subplots(
                 rows=2, cols=2, specs=[[{"type":"polar"}]*2]*2,
-                subplot_titles=[f"<b>{s}</b>" for s in SEASONS],
-                vertical_spacing=0.12, horizontal_spacing=0.06
+                subplot_titles=seas_titles,
+                vertical_spacing=0.07, horizontal_spacing=0.04,
             )
+            colors_wr = ["#FFEE58","#FFA726","#EF5350","#B71C1C","#4A148C"]
             for idx, season in enumerate(SEASONS):
-                r, c    = pos[idx]
-                sdf     = wind_df[wind_df["season"]==season]
+                r, c = pos[idx]
+                sdf  = wind_df[wind_df["season"]==season]
                 if len(sdf) < 10:
                     continue
                 dir_bins   = np.linspace(0, 360, 17)
@@ -1093,222 +1141,402 @@ with tabs[7]:
                 spd_max    = sdf["ws"].quantile(0.99)
                 n_spd      = 5
                 spd_bins   = np.linspace(0, spd_max, n_spd+1)
-                spd_labels = [f"{spd_bins[i]:.1f}–{spd_bins[i+1]:.1f}" for i in range(n_spd)]
+                spd_labels = [f"{spd_bins[si]:.2g}–{spd_bins[si+1]:.2g} {wr_ws_unit}"
+                              for si in range(n_spd)]
                 sdf = sdf.copy()
                 sdf["dir_bin"] = pd.cut(sdf["wd"], bins=dir_bins, labels=dir_labels, include_lowest=True)
                 sdf["spd_bin"] = pd.cut(sdf["ws"], bins=spd_bins, labels=spd_labels, include_lowest=True)
                 total = len(sdf)
-                colors = ["#FFEE58","#FFA726","#EF5350","#B71C1C","#4A148C"]
                 for si, sl in enumerate(spd_labels):
-                    sub    = sdf[sdf["spd_bin"]==sl]
-                    counts = sub.groupby("dir_bin",observed=True).size().reindex(dir_labels,fill_value=0)
-                    pct    = (counts/total*100).values
-                    show_leg = (idx==0)
+                    sub   = sdf[sdf["spd_bin"]==sl]
+                    cnts  = sub.groupby("dir_bin",observed=True).size().reindex(dir_labels,fill_value=0)
+                    n_sl  = int(cnts.sum())
+                    pct   = (cnts/total*100).values
                     fig4.add_trace(go.Barpolar(
-                        r=pct, theta=dir_labels, name=sl, legendgroup=sl,
-                        showlegend=show_leg,
-                        marker_color=colors[si % len(colors)],
+                        r=pct, theta=dir_labels,
+                        name=f"{sl} (n={n_sl:,})", legendgroup=sl,
+                        showlegend=(idx==0),
+                        marker_color=colors_wr[si % len(colors_wr)],
                         marker_line_color="#0a1628", marker_line_width=0.5,
-                        opacity=0.88), row=r, col=c)
+                        opacity=0.88,
+                        hovertemplate=(
+                            f"<b>{season}</b><br>"
+                            "<b>Dir:</b> %{theta}<br>"
+                            "<b>Freq:</b> %{r:.1f}%<br>"
+                            f"<b>Speed:</b> {sl}<extra></extra>"
+                        ),
+                    ), row=r, col=c)
 
             fig4.update_layout(
-                **PLOTLY_DARK,
-                title_text=f"Seasonal Wind Roses – {wr_site}",
-                height=820,
-                legend=dict(font=dict(color="#CFD8DC",size=10),
-                            bgcolor="rgba(13,31,60,0.8)",
-                            title=dict(text="Wind Speed",font=dict(color="#00E5FF"))),
+                **PLOTLY_DARK_BASE,
+                title=dict(
+                    text=f"Seasonal Wind Roses – {wr_site}  "
+                         f"<sup>Total N={len(wind_df):,}</sup>",
+                    font=dict(color="#E0F7FA", family="Rajdhani,sans-serif", size=15)),
+                height=860,
+                margin=dict(t=80, b=20, l=20, r=20),
+                legend=dict(font=dict(color="#CFD8DC",size=9),
+                            bgcolor="rgba(13,31,60,0.85)",
+                            title=dict(text=f"Wind Speed ({wr_ws_unit})",
+                                       font=dict(color="#00E5FF",size=10)),
+                            x=1.01, y=0.5),
+            )
+            polar_style = dict(
+                bgcolor="#0d1f3c",
+                angularaxis=dict(direction="clockwise",
+                                 tickfont=dict(color="#90CAF9",size=8),
+                                 gridcolor="#1a3a5c", linecolor="#1a3a5c"),
+                radialaxis=dict(ticksuffix="%",
+                                tickfont=dict(color="#90CAF9",size=7),
+                                gridcolor="#1a3a5c", linecolor="#1a3a5c"),
             )
             for i in range(1,5):
-                r2,c2 = pos[i-1]
-                polar_key = f"polar{'' if i==1 else i}"
-                fig4.update_layout(**{
-                    polar_key: dict(
-                        bgcolor="#0d1f3c",
-                        angularaxis=dict(direction="clockwise",
-                                         tickfont=dict(color="#90CAF9",size=9),
-                                         gridcolor="#1a3a5c"),
-                        radialaxis=dict(ticksuffix="%",
-                                        tickfont=dict(color="#90CAF9",size=8),
-                                        gridcolor="#1a3a5c"))
-                })
+                pk = f"polar{'' if i==1 else i}"
+                fig4.update_layout(**{pk: polar_style})
             for ann in fig4.layout.annotations:
-                ann.font = dict(color="#E0F7FA", family="Rajdhani,sans-serif", size=14)
+                ann.font = dict(color="#E0F7FA", family="Rajdhani,sans-serif", size=13)
+                ann.yshift = 8
             st.plotly_chart(fig4, use_container_width=True)
     else:
         st.info("Configure wind parameters above and click **Generate Wind Roses**.")
 
 # ─────────────────────────────────────────────────────────────────────────────
-# TAB 8  POLAR PLOTS
+# TAB 8  POLAR PLOTS  (openair-style kernel-smoothed bivariate surface)
 # ─────────────────────────────────────────────────────────────────────────────
 with tabs[8]:
-    st.markdown("### 🌀 Polar Plots (Concentration × Wind Direction × Speed)")
+    st.markdown("### 🌀 Polar Plots — openair style")
+    st.markdown(
+        "<small style='color:#546E7A;'>Kernel-smoothed bivariate surface of "
+        "concentration vs wind speed & direction — identical methodology to "
+        "openair::polarPlot() in R.</small>",
+        unsafe_allow_html=True)
 
-    pc1, pc2, pc3, pc4 = st.columns(4)
-    pp_site   = pc1.selectbox("Site", all_sites, key="pp_site_sel")
-    pp_stat   = pc2.selectbox("Statistic", ["mean","median","max","p95"], key="pp_stat")
-    pp_ws_p   = pc3.selectbox("Wind Speed param", all_params,
+    # ── Settings row ──────────────────────────────────────────────────────────
+    ps1,ps2,ps3,ps4,ps5,ps6 = st.columns(6)
+    pp_site = ps1.selectbox("Site", all_sites, key="pp_site_sel")
+    pp_stat = ps2.selectbox(
+        "Statistic",
+        ["mean","median","max","percentile","count","weighted.mean"],
+        key="pp_stat",
+        help="mean/median/max: concentration statistic per kernel cell.\n"
+             "percentile: 95th percentile.\n"
+             "count: observation frequency (like polarFreq).\n"
+             "weighted.mean: concentration weighted by wind speed.")
+    pp_pct  = ps3.number_input("Percentile (if chosen)", 5, 99, 95, 5,
+                                key="pp_pct")
+    pp_ws_p = ps4.selectbox("Wind Speed param", all_params,
         index=next((i for i,p in enumerate(all_params)
-            if re.search("wind.?speed|wspeed|^ws$",p,re.I)), 0), key="pp_ws_p")
-    pp_wd_p   = pc4.selectbox("Wind Direction param", all_params,
+            if re.search(r"wind.?speed|wspeed|^ws$",p,re.I)), 0),
+        key="pp_ws_p")
+    pp_wd_p = ps5.selectbox("Wind Direction param", all_params,
         index=next((i for i,p in enumerate(all_params)
-            if re.search("wind.?dir|wdir|^wd$|direction",p,re.I)),
-            min(1,len(all_params)-1)), key="pp_wd_p")
+            if re.search(r"wind.?dir|wdir|^wd$|direction",p,re.I)),
+            min(1,len(all_params)-1)),
+        key="pp_wd_p")
+    pp_smooth = ps6.slider("Smoothing (σ)", 0.5, 6.0, 2.0, 0.5, key="pp_smooth")
+
+    pu1,pu2,pu3,_ = st.columns([1,1,1,3])
+    pp_ws_unit   = pu1.text_input("WS unit",        value="m/s",  key="pp_ws_unit")
+    pp_poll_unit = pu2.text_input(f"{sel_param} unit", value="ppb", key="pp_poll_unit")
+    pp_n_grid    = pu3.select_slider("Grid resolution", [60,80,100,120,150], value=100,
+                                     key="pp_ngrid")
 
     gen_pp = st.button("🌀 Generate Polar Plots", use_container_width=False)
 
-    STAT_FN = {
-        "mean"  : "mean",
-        "median": "median",
-        "max"   : "max",
-        "p95"   : lambda x: x.quantile(0.95),
-    }
+    # ── Core kernel-smoothed polar surface builder ────────────────────────────
+    from scipy.ndimage import gaussian_filter
 
-    def build_polar_df(site_sel, d1, d2):
-        if site_sel == "All Sites":
-            ad_site = ad
+    def _compute_polar_surface(df_in, stat="mean", pct=95, n_grid=100,
+                                smooth_sigma=2.0):
+        """
+        openair-equivalent: convert ws+wd to Cartesian, bin into n_grid×n_grid,
+        compute statistic per cell, then apply Gaussian smoothing.
+        Returns (grid_xy, Z_smoothed, Z_count, ws_max).
+        """
+        df2 = df_in.dropna(subset=["ws","wd","pollutant"]).copy()
+        if len(df2) < 20:
+            return None
+
+        wd_rad  = np.deg2rad(df2["wd"].values)
+        ws_vals = df2["ws"].values
+        poll    = df2["pollutant"].values
+
+        # N = North at top → x = sin(wd), y = cos(wd)
+        u = ws_vals * np.sin(wd_rad)   # West–East
+        v = ws_vals * np.cos(wd_rad)   # South–North
+
+        ws_max = float(np.quantile(ws_vals, 0.99))
+        cell_w = 2.0 * ws_max / n_grid
+
+        # Map each obs to grid cell
+        ci = np.clip(((u + ws_max) / cell_w).astype(int), 0, n_grid - 1)
+        ri = np.clip(((v + ws_max) / cell_w).astype(int), 0, n_grid - 1)
+
+        # Accumulate per cell
+        cells = [[[] for _ in range(n_grid)] for _ in range(n_grid)]
+        ws_cells = [[[] for _ in range(n_grid)] for _ in range(n_grid)]
+        for k in range(len(u)):
+            cells[ri[k]][ci[k]].append(poll[k])
+            ws_cells[ri[k]][ci[k]].append(ws_vals[k])
+
+        # Compute statistic numerator + count
+        Z_num   = np.zeros((n_grid, n_grid))
+        Z_count = np.zeros((n_grid, n_grid))
+        for r in range(n_grid):
+            for c in range(n_grid):
+                vals = cells[r][c]
+                n    = len(vals)
+                if n == 0:
+                    continue
+                Z_count[r, c] = n
+                if stat == "mean":
+                    Z_num[r, c] = np.mean(vals)
+                elif stat == "median":
+                    Z_num[r, c] = np.median(vals)
+                elif stat == "max":
+                    Z_num[r, c] = np.max(vals)
+                elif stat == "percentile":
+                    Z_num[r, c] = np.percentile(vals, pct)
+                elif stat == "count":
+                    Z_num[r, c] = n   # frequency
+                elif stat == "weighted.mean":
+                    ws_w = ws_cells[r][c]
+                    Z_num[r, c] = (np.array(vals) * np.array(ws_w)).sum() / (np.sum(ws_w) + 1e-9)
+
+        # Gaussian-smooth numerator & denominator separately (preserves edges)
+        if stat == "count":
+            Z_smooth = gaussian_filter(Z_num, sigma=smooth_sigma)
         else:
-            ad_site = ad[ad["Sitename"]==site_sel]
-        ws = ad_site[ad_site["Parameter"]==pp_ws_p][["datetime","value"]].rename(columns={"value":"ws"})
-        wd = ad_site[ad_site["Parameter"]==pp_wd_p][["datetime","value"]].rename(columns={"value":"wd"})
-        po = ad_site[ad_site["Parameter"]==sel_param][["datetime","value"]].rename(columns={"value":"pollutant"})
-        df = ws.merge(wd, on="datetime").merge(po, on="datetime")
-        df = df[(df["datetime"]>=d1)&(df["datetime"]<=d2)].dropna()
-        df["season"] = get_season(df["datetime"])
-        return df
+            sm_num = gaussian_filter(Z_num * Z_count, sigma=smooth_sigma)
+            sm_den = gaussian_filter(Z_count,          sigma=smooth_sigma)
+            with np.errstate(invalid="ignore", divide="ignore"):
+                Z_smooth = np.where(sm_den > 0.5, sm_num / sm_den, np.nan)
 
-    def plotly_polar_plot(df, title, stat_fn_key="mean", n_dir=24, n_spd=8):
-        """
-        Polar concentration plot: mean/median/max pollutant as function of
-        wind direction (theta) and wind speed (radius), shown as heat-binned scatter.
-        """
-        if len(df) < 30:
-            return go.Figure().update_layout(title_text="Not enough data", **PLOTLY_DARK)
-        stat_fn  = STAT_FN[stat_fn_key]
-        dir_bins = np.linspace(0, 360, n_dir+1)
-        spd_bins = np.linspace(0, df["ws"].quantile(0.99)+0.01, n_spd+1)
+        Z_cnt_smooth = gaussian_filter(Z_count, sigma=smooth_sigma)
 
-        df2 = df.copy()
-        df2["dir_bin"] = pd.cut(df2["wd"], bins=dir_bins, include_lowest=True)
-        df2["spd_bin"] = pd.cut(df2["ws"], bins=spd_bins, include_lowest=True)
-        agg = df2.groupby(["dir_bin","spd_bin"], observed=True)["pollutant"].agg(stat_fn).reset_index()
-        agg.columns = ["dir_bin","spd_bin","stat"]
-        agg["dir_mid"] = agg["dir_bin"].apply(lambda b: (b.left+b.right)/2)
-        agg["spd_mid"] = agg["spd_bin"].apply(lambda b: (b.left+b.right)/2)
-        agg = agg.dropna()
+        # Circular mask — outside ws_max = NaN
+        grid_1d = np.linspace(-ws_max, ws_max, n_grid)
+        gx, gy  = np.meshgrid(grid_1d, grid_1d)
+        dist    = np.sqrt(gx**2 + gy**2)
+        Z_smooth[dist > ws_max] = np.nan
 
-        fig = go.Figure(go.Scatterpolar(
-            r     = agg["spd_mid"],
-            theta = agg["dir_mid"],
-            mode  = "markers",
-            marker= dict(
-                color     = agg["stat"],
-                colorscale= "Jet",
-                size      = 10,
-                opacity   = 0.85,
-                colorbar  = dict(
-                    title=dict(text=f"{sel_param}<br>({stat_fn_key})",
-                               font=dict(color="#90CAF9",size=11)),
-                    tickfont=dict(color="#90CAF9"),
-                    bgcolor="#0a1628",
-                    bordercolor="#1a3a5c"),
-                line=dict(width=0)
+        return grid_1d, Z_smooth, Z_cnt_smooth, ws_max
+
+    # ── Plotly figure from smoothed surface ───────────────────────────────────
+    def make_openair_fig(df_in, title, stat="mean", pct=95,
+                         n_grid=100, smooth=2.0,
+                         ws_unit="m/s", poll_unit="",
+                         param_name="", fig_h=600):
+
+        result = _compute_polar_surface(df_in, stat, pct, n_grid, smooth)
+        if result is None:
+            fig = go.Figure()
+            fig.update_layout(**PLOTLY_DARK_BASE,
+                              title_text="Not enough data (< 20 obs)")
+            return fig
+
+        grid_1d, Z, Z_cnt, ws_max = result
+        total_n = int(df_in["pollutant"].count())
+        unit_lbl  = f" ({poll_unit})" if poll_unit else ""
+        stat_lbl  = f"{stat} ({pct}th pct)" if stat=="percentile" else stat
+        cb_title  = ("Count (obs)" if stat=="count"
+                     else f"{param_name}{unit_lbl}<br>{stat_lbl}")
+
+        # ── Heatmap trace ─────────────────────────────────────────────────────
+        # Build hover: concentration + count per cell
+        hover_z   = np.where(np.isnan(Z), "–",
+                             np.round(Z, 3).astype(str))
+        hover_cnt = np.round(Z_cnt, 1).astype(str)
+
+        heatmap = go.Heatmap(
+            x = grid_1d,
+            y = grid_1d,
+            z = Z,
+            colorscale  = "Jet",
+            showscale   = True,
+            zsmooth     = "best",
+            colorbar    = dict(
+                title      = dict(text=cb_title,
+                                  font=dict(color="#90CAF9", size=11)),
+                tickfont   = dict(color="#90CAF9", size=10),
+                bgcolor    = "#0a1628",
+                bordercolor= "#1a3a5c",
+                thickness  = 16,
+                len        = 0.80,
+                x          = 1.01,
             ),
-            hovertemplate="Dir: %{theta:.0f}°<br>WS: %{r:.2f} m/s<br>"
-                          f"{sel_param}: %{{marker.color:.3f}}<extra></extra>"
+            hovertemplate=(
+                f"<b>x:</b> %{{x:.2f}} {ws_unit}<br>"
+                f"<b>y:</b> %{{y:.2f}} {ws_unit}<br>"
+                f"<b>{stat_lbl}:</b> %{{z:.3f}}{unit_lbl}<extra></extra>"
+            ),
+            name = stat_lbl,
+        )
+
+        fig = go.Figure(heatmap)
+
+        # ── Polar grid: speed rings ───────────────────────────────────────────
+        n_rings  = 4
+        ring_ws  = np.linspace(ws_max / n_rings, ws_max, n_rings)
+        theta_c  = np.linspace(0, 2 * np.pi, 200)
+
+        for rws in ring_ws:
+            fig.add_trace(go.Scatter(
+                x = rws * np.sin(theta_c),
+                y = rws * np.cos(theta_c),
+                mode="lines",
+                line=dict(color="rgba(144,202,249,0.22)", width=1, dash="dot"),
+                showlegend=False, hoverinfo="skip",
+            ))
+
+        # ── Polar grid: direction spokes ──────────────────────────────────────
+        for deg in range(0, 360, 45):
+            rad = np.deg2rad(deg)
+            fig.add_trace(go.Scatter(
+                x=[0, ws_max * np.sin(rad)],
+                y=[0, ws_max * np.cos(rad)],
+                mode="lines",
+                line=dict(color="rgba(144,202,249,0.18)", width=1),
+                showlegend=False, hoverinfo="skip",
+            ))
+
+        # ── Compass labels ────────────────────────────────────────────────────
+        compass = {"N":0,"NE":45,"E":90,"SE":135,
+                   "S":180,"SW":225,"W":270,"NW":315}
+        label_r = ws_max * 1.07
+        annotations = []
+        for lbl, deg in compass.items():
+            rad = np.deg2rad(deg)
+            annotations.append(dict(
+                x=label_r * np.sin(rad), y=label_r * np.cos(rad),
+                text=f"<b>{lbl}</b>",
+                showarrow=False,
+                font=dict(color="#00E5FF", size=12,
+                           family="Rajdhani,sans-serif"),
+                xanchor="center", yanchor="middle",
+            ))
+
+        # ── Wind-speed ring labels ────────────────────────────────────────────
+        for rws in ring_ws:
+            annotations.append(dict(
+                x=rws * 0.707, y=rws * 0.707,  # NE diagonal
+                text=f"{rws:.1f}<br>{ws_unit}",
+                showarrow=False,
+                font=dict(color="rgba(144,202,249,0.7)", size=8),
+                xanchor="left", yanchor="bottom",
+            ))
+
+        # ── N arrow ──────────────────────────────────────────────────────────
+        annotations.append(dict(
+            x=0, y=ws_max * 0.88, ax=0, ay=ws_max * 0.62,
+            xref="x", yref="y", axref="x", ayref="y",
+            showarrow=True,
+            arrowhead=2, arrowsize=1.4, arrowwidth=2,
+            arrowcolor="#00E5FF",
         ))
+
+        pad = ws_max * 1.18
         fig.update_layout(
-            **PLOTLY_DARK,
-            title_text=title,
-            polar=dict(
-                bgcolor="#0d1f3c",
-                angularaxis=dict(direction="clockwise", rotation=90,
-                                 tickfont=dict(color="#90CAF9",size=10),
-                                 gridcolor="#1a3a5c"),
-                radialaxis=dict(title=dict(text="Wind Speed (m/s)",
-                                           font=dict(color="#90CAF9",size=10)),
-                               tickfont=dict(color="#90CAF9",size=9),
-                               gridcolor="#1a3a5c")),
-            height=540,
+            **PLOTLY_DARK_BASE,
+            title=dict(
+                text=(f"{title}"
+                      f"<br><sup style='color:#78909C'>"
+                      f"Stat: {stat_lbl} | N = {total_n:,} valid obs | "
+                      f"Smoothing σ={smooth}</sup>"),
+                font=dict(color="#E0F7FA", family="Rajdhani,sans-serif", size=14)),
+            xaxis=dict(range=[-pad, pad], visible=False,
+                       scaleanchor="y", scaleratio=1),
+            yaxis=dict(range=[-pad, pad], visible=False),
+            annotations=annotations,
+            showlegend=False,
+            margin=dict(t=80, b=20, l=20, r=90),
+            height=fig_h,
+            plot_bgcolor="#0a1628",
+            paper_bgcolor="#0a1628",
         )
         return fig
 
+    # ── Build polar df ────────────────────────────────────────────────────────
+    def build_polar_df(site_sel, d1_ts, d2_ts):
+        src = ad if site_sel == "All Sites" else ad[ad["Sitename"]==site_sel]
+        ws  = src[src["Parameter"]==pp_ws_p][["datetime","value"]].rename(columns={"value":"ws"})
+        wd  = src[src["Parameter"]==pp_wd_p][["datetime","value"]].rename(columns={"value":"wd"})
+        po  = src[src["Parameter"]==sel_param][["datetime","value"]].rename(columns={"value":"pollutant"})
+        df  = ws.merge(wd, on="datetime").merge(po, on="datetime")
+        df  = df[(df["datetime"]>=d1_ts)&(df["datetime"]<=d2_ts)].dropna()
+        df["season"] = get_season(df["datetime"])
+        return df
+
+    # ── Render ────────────────────────────────────────────────────────────────
     if gen_pp:
         pp_df = build_polar_df(pp_site, d1, d2)
         if len(pp_df) < 30:
-            st.error("Not enough data. Try a wider date range or different site.")
+            st.error("Not enough data — try a wider date range or different site.")
         else:
-            # Overall polar
-            st.markdown(f"#### Overall Polar Plot – {sel_param} | {pp_site}")
-            st.plotly_chart(plotly_polar_plot(pp_df,
-                f"Polar Plot – {sel_param} ({pp_stat}) | {pp_site} | All Seasons",
-                pp_stat), use_container_width=True)
-
-            # ── 4-Season 2×2 ─────────────────────────────────────────────
-            st.markdown(f"#### Seasonal Polar Plots – {sel_param} | {pp_site} (2×2 Panel)")
-            fig_pp4 = make_subplots(
-                rows=2, cols=2, specs=[[{"type":"polar"}]*2]*2,
-                subplot_titles=[f"<b>{s}</b>" for s in SEASONS],
-                vertical_spacing=0.14, horizontal_spacing=0.06
+            # ── Overall ───────────────────────────────────────────────────────
+            st.markdown(f"#### Overall Polar Plot — {sel_param} | {pp_site}")
+            fig_overall = make_openair_fig(
+                pp_df,
+                title=f"Polar Plot — {sel_param} | {pp_site} | All Seasons",
+                stat=pp_stat, pct=pp_pct,
+                n_grid=pp_n_grid, smooth=pp_smooth,
+                ws_unit=pp_ws_unit, poll_unit=pp_poll_unit,
+                param_name=sel_param, fig_h=600,
             )
-            color_scale = px.colors.sequential.Jet
-            for idx, season in enumerate(SEASONS):
-                r2, c2 = pos[idx]
-                sdf    = pp_df[pp_df["season"]==season]
-                if len(sdf) < 20:
-                    continue
-                stat_fn  = STAT_FN[pp_stat]
-                dir_bins = np.linspace(0, 360, 25)
-                spd_bins = np.linspace(0, sdf["ws"].quantile(0.99)+0.01, 9)
-                sdf = sdf.copy()
-                sdf["dir_bin"] = pd.cut(sdf["wd"], bins=dir_bins, include_lowest=True)
-                sdf["spd_bin"] = pd.cut(sdf["ws"], bins=spd_bins, include_lowest=True)
-                agg = sdf.groupby(["dir_bin","spd_bin"],observed=True)["pollutant"].agg(stat_fn).reset_index()
-                agg.columns = ["dir_bin","spd_bin","stat"]
-                agg["dir_mid"] = agg["dir_bin"].apply(lambda b: (b.left+b.right)/2)
-                agg["spd_mid"] = agg["spd_bin"].apply(lambda b: (b.left+b.right)/2)
-                agg = agg.dropna()
-                show_cb = (idx == 0)
-                polar_key = f"polar{'' if idx==0 else idx+1}"
-                fig_pp4.add_trace(go.Scatterpolar(
-                    r=agg["spd_mid"], theta=agg["dir_mid"],
-                    mode="markers",
-                    name=season, showlegend=False,
-                    marker=dict(
-                        color=agg["stat"], colorscale="Jet",
-                        size=9, opacity=0.85,
-                        showscale=show_cb,
-                        colorbar=dict(
-                            x=1.02, thickness=12,
-                            title=dict(text=f"{sel_param}",
-                                       font=dict(color="#90CAF9",size=10)),
-                            tickfont=dict(color="#90CAF9",size=8),
-                            bgcolor="#0a1628", bordercolor="#1a3a5c")
-                        if show_cb else dict(showscale=False)),
-                    subplot=polar_key),
-                    row=r2, col=c2)
+            st.plotly_chart(fig_overall, use_container_width=True)
 
-            fig_pp4.update_layout(
-                **PLOTLY_DARK,
-                title_text=f"Seasonal Polar Plots – {sel_param} ({pp_stat}) | {pp_site}",
-                height=860,
-            )
-            for i in range(1,5):
-                polar_key = f"polar{'' if i==1 else i}"
-                fig_pp4.update_layout(**{
-                    polar_key: dict(
-                        bgcolor="#0d1f3c",
-                        angularaxis=dict(direction="clockwise", rotation=90,
-                                         tickfont=dict(color="#90CAF9",size=8),
-                                         gridcolor="#1a3a5c"),
-                        radialaxis=dict(tickfont=dict(color="#90CAF9",size=7),
-                                        gridcolor="#1a3a5c"))
-                })
-            for ann in fig_pp4.layout.annotations:
-                ann.font = dict(color="#E0F7FA", family="Rajdhani,sans-serif", size=14)
-            st.plotly_chart(fig_pp4, use_container_width=True)
+            # ── Summary stats under overall plot ──────────────────────────────
+            with st.expander("📊 Descriptive statistics for this polar dataset"):
+                ss = pp_df.groupby("season")["pollutant"].agg(
+                    N="count",
+                    Mean=lambda x: round(x.mean(),3),
+                    Median=lambda x: round(x.median(),3),
+                    P95=lambda x: round(x.quantile(.95),3),
+                    Max=lambda x: round(x.max(),3),
+                ).reset_index()
+                st.dataframe(ss, use_container_width=True)
+
+            # ── 2×2 Seasonal panel ────────────────────────────────────────────
+            st.markdown(
+                f"#### Seasonal Polar Plots — {sel_param} | {pp_site}  "
+                f"(2 × 2 Panel)")
+
+            # Render 4 individual Plotly figures laid out in 2 rows of 2
+            for row_idx in range(2):
+                cols_pair = st.columns(2, gap="small")
+                for col_idx in range(2):
+                    season = SEASONS[row_idx * 2 + col_idx]
+                    sdf    = pp_df[pp_df["season"] == season]
+                    n_seas = int(sdf["pollutant"].count())
+                    with cols_pair[col_idx]:
+                        st.markdown(
+                            f"<div style='text-align:center;color:#E0F7FA;"
+                            f"font-family:Rajdhani,sans-serif;font-size:15px;"
+                            f"font-weight:700;padding:4px 0 2px 0;'>"
+                            f"{season} &nbsp;<span style='color:#78909C;"
+                            f"font-size:12px;font-weight:400;'>n={n_seas:,}</span>"
+                            f"</div>",
+                            unsafe_allow_html=True)
+                        if n_seas < 20:
+                            st.info(f"Not enough data for {season} (n={n_seas})")
+                        else:
+                            fig_s = make_openair_fig(
+                                sdf,
+                                title="",
+                                stat=pp_stat, pct=pp_pct,
+                                n_grid=max(60, pp_n_grid - 20),
+                                smooth=pp_smooth,
+                                ws_unit=pp_ws_unit, poll_unit=pp_poll_unit,
+                                param_name=sel_param, fig_h=430,
+                            )
+                            # Tighter margins for panel
+                            fig_s.update_layout(
+                                margin=dict(t=20, b=10, l=10, r=70),
+                                title_text="",
+                            )
+                            st.plotly_chart(fig_s, use_container_width=True)
     else:
-        st.info("Configure parameters above and click **Generate Polar Plots**.")
+        st.info("⬆️ Configure settings above and click **Generate Polar Plots**.")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TAB 9  EXPORT
