@@ -204,19 +204,19 @@ PLOTLY_DARK = dict(
     legend        = dict(bgcolor="rgba(13,31,60,0.85)", bordercolor="#1a3a5c",
                          font=dict(color="#CFD8DC", size=11),
                          orientation="h", yanchor="bottom", y=-0.28),
-    xaxis         = dict(color="#90CAF9", gridcolor="#1a3a5c", zerolinecolor="#1a3a5c"),
-    yaxis         = dict(color="#90CAF9", gridcolor="#1a3a5c", zerolinecolor="#1a3a5c"),
     margin        = dict(t=55, b=70, l=65, r=20),
     hovermode     = "x unified",
 )
 
+# Axis style dict – applied via update_xaxes/update_yaxes so it never
+# collides with custom xaxis= / yaxis= kwargs in update_layout.
+DARK_AXIS = dict(color="#90CAF9", gridcolor="#1a3a5c", zerolinecolor="#1a3a5c")
+
 def apply_dark(fig, title="", xlab="", ylab=""):
-    fig.update_layout(
-        **PLOTLY_DARK,
-        title_text = title,
-        xaxis_title = xlab,
-        yaxis_title = ylab,
-    )
+    """Apply dark theme. Uses update_xaxes/update_yaxes – safe for subplots."""
+    fig.update_layout(**PLOTLY_DARK, title_text=title)
+    fig.update_xaxes(**DARK_AXIS, title_text=xlab)
+    fig.update_yaxes(**DARK_AXIS, title_text=ylab)
     return fig
 
 # ==============================================================================
@@ -725,14 +725,15 @@ with tabs[3]:
         fig.update_layout(
             **PLOTLY_DARK,
             title_text=f"{'Box' if plot_type=='box' else 'Violin'} Plot – {sel_param} by {agg_by}",
-            xaxis=dict(
-                tickmode="array",
-                tickvals=list(range(1, len(order)+1)),
-                ticktext=order,
-                color="#90CAF9", gridcolor="#1a3a5c",
-                range=[0.3, len(order)+0.7]),
-            yaxis=dict(title=sel_param, color="#90CAF9", gridcolor="#1a3a5c"),
         )
+        fig.update_xaxes(
+            **DARK_AXIS,
+            tickmode="array",
+            tickvals=list(range(1, len(order)+1)),
+            ticktext=order,
+            range=[0.3, len(order)+0.7],
+        )
+        fig.update_yaxes(**DARK_AXIS, title_text=sel_param)
         return fig
 
     st.plotly_chart(make_box_violin("box"),    use_container_width=True)
@@ -934,11 +935,11 @@ with tabs[6]:
     )
     for i in range(1,5):
         fig_seas.update_xaxes(
-            title_text="Hour of Day", color="#90CAF9",
-            gridcolor="#1a3a5c", row=(i-1)//2+1, col=(i-1)%2+1)
+            **DARK_AXIS, title_text="Hour of Day",
+            row=(i-1)//2+1, col=(i-1)%2+1)
         fig_seas.update_yaxes(
+            **DARK_AXIS,
             title_text=sel_param if (i-1)%2==0 else "",
-            color="#90CAF9", gridcolor="#1a3a5c",
             row=(i-1)//2+1, col=(i-1)%2+1)
     for ann in fig_seas.layout.annotations:
         ann.font = dict(color="#E0F7FA", family="Rajdhani,sans-serif", size=14)
@@ -976,11 +977,11 @@ with tabs[6]:
                     font=dict(color="#CFD8DC")),
     )
     for i in range(1,5):
-        fig_smon.update_xaxes(color="#90CAF9", gridcolor="#1a3a5c",
-                               row=(i-1)//2+1, col=(i-1)%2+1)
-        fig_smon.update_yaxes(title_text=sel_param if (i-1)%2==0 else "",
-                               color="#90CAF9", gridcolor="#1a3a5c",
-                               row=(i-1)//2+1, col=(i-1)%2+1)
+        fig_smon.update_xaxes(**DARK_AXIS, row=(i-1)//2+1, col=(i-1)%2+1)
+        fig_smon.update_yaxes(
+            **DARK_AXIS,
+            title_text=sel_param if (i-1)%2==0 else "",
+            row=(i-1)//2+1, col=(i-1)%2+1)
     for ann in fig_smon.layout.annotations:
         ann.font = dict(color="#E0F7FA", family="Rajdhani,sans-serif", size=14)
     st.plotly_chart(fig_smon, use_container_width=True)
