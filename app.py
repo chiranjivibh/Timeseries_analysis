@@ -200,8 +200,8 @@ def hex_rgba(hex_color: str, alpha: float) -> str:
 # legend / margin / hovermode are applied inside apply_dark() as defaults
 # so callers can freely override them without "multiple values" conflicts.
 PLOTLY_DARK_BASE = dict(
-    paper_bgcolor = "#0a1628",
-    plot_bgcolor  = "#0d1f3c",
+    paper_bgcolor = "rgba(0,0,0,0)",
+    plot_bgcolor  = "rgba(0,0,0,0)",
     font          = dict(family="'Exo 2', sans-serif", color="#CFD8DC"),
     title_font    = dict(family="'Rajdhani', sans-serif", color="#E0F7FA", size=16),
 )
@@ -210,12 +210,12 @@ PLOTLY_DARK_BASE = dict(
 PLOTLY_DARK = PLOTLY_DARK_BASE
 
 DARK_LEGEND = dict(
-    bgcolor="rgba(13,31,60,0.85)", bordercolor="#1a3a5c",
+    bgcolor="rgba(5,13,26,0.55)", bordercolor="rgba(144,202,249,0.30)",
     font=dict(color="#CFD8DC", size=11),
     orientation="h", yanchor="bottom", y=-0.28,
 )
 DARK_MARGIN   = dict(t=55, b=70, l=65, r=20)
-DARK_AXIS     = dict(color="#90CAF9", gridcolor="#1a3a5c", zerolinecolor="#1a3a5c")
+DARK_AXIS     = dict(color="#90CAF9", gridcolor="rgba(144,202,249,0.18)", zerolinecolor="rgba(144,202,249,0.25)")
 
 def apply_dark(fig, title="", xlab="", ylab="",
                legend=None, margin=None, hovermode="x unified"):
@@ -417,10 +417,30 @@ with st.sidebar:
         d1, d2 = pd.Timestamp(dt_min, tz="UTC"), pd.Timestamp(dt_max, tz="UTC") + pd.Timedelta("23h59m")
 
     st.markdown("---")
+    st.markdown('<span style="color:#00E5FF;font-size:12px;font-weight:600;">🎨 CHART STYLE</span>',
+                unsafe_allow_html=True)
+    transparent_bg = st.checkbox("Transparent backgrounds", value=True,
+        help="Make all chart backgrounds transparent for map overlay")
+    export_transparent = st.checkbox("Transparent PNG export", value=True, key="exp_transp")
+
+    st.markdown("---")
     st.markdown('<span style="color:#00E5FF;font-size:12px;font-weight:600;">⚠️ THRESHOLDS</span>',
                 unsafe_allow_html=True)
     thresh_1h  = st.number_input("1-hr Average Limit",  value=10.0, min_value=0.0, step=0.5)
     thresh_24h = st.number_input("24-hr Rolling Limit", value=8.0,  min_value=0.0, step=0.5)
+
+# ==============================================================================
+#  TRANSPARENCY – apply sidebar toggle to all chart backgrounds
+# ==============================================================================
+_BG = "rgba(0,0,0,0)" if transparent_bg else "#0a1628"
+_PL = "rgba(0,0,0,0)" if transparent_bg else "#0d1f3c"
+PLOTLY_DARK_BASE = dict(
+    paper_bgcolor = _BG,
+    plot_bgcolor  = _PL,
+    font      = dict(family="'Exo 2', sans-serif", color="#CFD8DC"),
+    title_font= dict(family="'Rajdhani', sans-serif", color="#E0F7FA", size=16),
+)
+PLOTLY_DARK = PLOTLY_DARK_BASE   # alias kept for any legacy references
 
 # ==============================================================================
 #  FILTERED DATA
@@ -947,7 +967,7 @@ with tabs[6]:
         title_text=f"Seasonal Diurnal Patterns – {sel_param}",
         height=600,
         hovermode="x unified",
-        legend=dict(orientation="h", y=-0.12, bgcolor="rgba(13,31,60,0.85)",
+        legend=dict(orientation="h", y=-0.12, bgcolor="rgba(5,13,26,0.55)",
                     font=dict(color="#CFD8DC")),
         margin=DARK_MARGIN,
     )
@@ -992,7 +1012,7 @@ with tabs[6]:
         title_text=f"Seasonal Monthly Patterns – {sel_param}",
         height=600,
         hovermode="x unified",
-        legend=dict(orientation="h", y=-0.12, bgcolor="rgba(13,31,60,0.85)",
+        legend=dict(orientation="h", y=-0.12, bgcolor="rgba(5,13,26,0.55)",
                     font=dict(color="#CFD8DC")),
         margin=DARK_MARGIN,
     )
@@ -1088,18 +1108,18 @@ with tabs[7]:
                 text=f"{title}<br><sup style='color:#78909C'>N = {total:,} valid observations</sup>",
                 font=dict(color="#E0F7FA", family="Rajdhani,sans-serif", size=15)),
             polar=dict(
-                bgcolor="#0d1f3c",
+                bgcolor="rgba(5,13,26,0.35)",
                 angularaxis=dict(direction="clockwise",
                                  tickfont=dict(color="#90CAF9", size=10),
-                                 linecolor="#1a3a5c", gridcolor="#1a3a5c"),
+                                 linecolor="rgba(144,202,249,0.25)", gridcolor="rgba(144,202,249,0.18)"),
                 radialaxis=dict(ticksuffix="%",
                                 tickfont=dict(color="#90CAF9", size=9),
-                                gridcolor="#1a3a5c", linecolor="#1a3a5c",
+                                gridcolor="rgba(144,202,249,0.18)", linecolor="rgba(144,202,249,0.25)",
                                 title=dict(text="Frequency (%)",
                                            font=dict(color="#90CAF9", size=9)))),
             showlegend=True,
             legend=dict(font=dict(color="#CFD8DC", size=10),
-                        bgcolor="rgba(13,31,60,0.8)",
+                        bgcolor="rgba(5,13,26,0.55)",
                         title=dict(text=f"Wind Speed ({ws_unit})",
                                    font=dict(color="#00E5FF"))),
             margin=dict(t=70, b=30, l=30, r=30),
@@ -1185,13 +1205,13 @@ with tabs[7]:
                 # Per-subplot polar config with domain
                 polar_layout_kw[pk] = dict(
                     domain=dom,
-                    bgcolor="#0d1f3c",
+                    bgcolor="rgba(5,13,26,0.35)",
                     angularaxis=dict(direction="clockwise",
                                      tickfont=dict(color="#90CAF9",size=8),
-                                     gridcolor="#1a3a5c", linecolor="#1a3a5c"),
+                                     gridcolor="rgba(144,202,249,0.18)", linecolor="rgba(144,202,249,0.25)"),
                     radialaxis=dict(ticksuffix="%",
                                     tickfont=dict(color="#90CAF9",size=7),
-                                    gridcolor="#1a3a5c", linecolor="#1a3a5c"),
+                                    gridcolor="rgba(144,202,249,0.18)", linecolor="rgba(144,202,249,0.25)"),
                 )
 
             # Season label annotations in the centre of each domain
@@ -1219,7 +1239,7 @@ with tabs[7]:
                 height=820,
                 margin=dict(t=60, b=10, l=10, r=10),
                 legend=dict(font=dict(color="#CFD8DC",size=9),
-                            bgcolor="rgba(13,31,60,0.85)",
+                            bgcolor="rgba(5,13,26,0.55)",
                             title=dict(text=f"Wind Speed ({wr_ws_unit})",
                                        font=dict(color="#00E5FF",size=10)),
                             x=1.0, y=0.5, xanchor="left"),
@@ -1395,8 +1415,8 @@ with tabs[8]:
                 title      = dict(text=cb_title,
                                   font=dict(color="#90CAF9", size=11)),
                 tickfont   = dict(color="#90CAF9", size=10),
-                bgcolor    = "#0a1628",
-                bordercolor= "#1a3a5c",
+                bgcolor    = "rgba(5,13,26,0.55)",
+                bordercolor= "rgba(144,202,249,0.30)",
                 thickness  = 16,
                 len        = 0.80,
                 x          = 1.01,
@@ -1875,6 +1895,33 @@ with tabs[9]:
     st.markdown(
         "<small style='color:#37474F;'>💡 Wind Rose and Polar Plot downloads are "
         "available directly beneath each chart in tabs 🌬️ and 🌀.</small>",
+        unsafe_allow_html=True)
+
+    # ── Transparent PNG note ──────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("### 🖼️ Transparent PNG Export")
+    st.markdown(
+        """<div style='background:#0d1f3c;border:1px solid #1a3a5c;
+        border-radius:10px;padding:14px 18px;'>
+        <p style='color:#90CAF9;font-size:13px;margin:0;'>
+        Transparent-background PNGs require the <code>kaleido</code> package.
+        Install it once with: <code>pip install kaleido</code><br><br>
+        Then use this snippet in your own script to export any figure:
+        </p>
+        <pre style='background:#050d1a;color:#69FF47;padding:10px;
+        border-radius:8px;font-size:12px;margin-top:8px;'>
+import plotly.io as pio
+fig.update_layout(paper_bgcolor="rgba(0,0,0,0)",
+                  plot_bgcolor="rgba(0,0,0,0)")
+pio.write_image(fig, "chart_transparent.png",
+               format="png", scale=3,
+               engine="kaleido")
+        </pre>
+        <p style='color:#78909C;font-size:11px;margin:6px 0 0 0;'>
+        💡 The <b>Transparent backgrounds</b> checkbox in the sidebar
+        already sets rgba(0,0,0,0) on all charts — just run the snippet
+        on whichever figure you want to save.
+        </p></div>""",
         unsafe_allow_html=True)
 
 # ── Footer ────────────────────────────────────────────────────────────────────
