@@ -1114,10 +1114,15 @@ with tabs[7]:
         else:
             # Overall rose
             st.markdown(f"#### Overall Wind Rose – {wr_site}")
-            st.plotly_chart(plotly_windrose(wind_df,
+            fig_wr_overall = plotly_windrose(wind_df,
                 f"Wind Rose – {wr_site} | All Data",
-                ws_unit=wr_ws_unit),
-                use_container_width=True)
+                ws_unit=wr_ws_unit)
+            st.plotly_chart(fig_wr_overall, use_container_width=True)
+            st.download_button(
+                "⬇️ Download Overall Wind Rose (HTML)",
+                data=fig_wr_overall.to_html(include_plotlyjs="cdn", full_html=True).encode(),
+                file_name=f"windrose_{wr_site}_{pd.Timestamp.now().date()}.html",
+                mime="text/html", key="dl_wr_overall")
 
             # ── 4-Season 2×2 panel ────────────────────────────────────────
             st.markdown(f"#### Seasonal Wind Roses – {wr_site} (2×2 Panel)")
@@ -1125,17 +1130,26 @@ with tabs[7]:
                 f"<b>{s}</b>  <sup>n={len(wind_df[wind_df['season']==s]):,}</sup>"
                 for s in SEASONS
             ]
-            fig4 = make_subplots(
-                rows=2, cols=2, specs=[[{"type":"polar"}]*2]*2,
-                subplot_titles=seas_titles,
-                vertical_spacing=0.07, horizontal_spacing=0.04,
-            )
-            colors_wr = ["#FFEE58","#FFA726","#EF5350","#B71C1C","#4A148C"]
+            # Explicit domain layout – fills space fully, no make_subplots gaps
+            # Domains: [x0,x1], [y0,y1] in normalised 0-1 coords
+            POLAR_DOMAINS = {
+                0: dict(x=[0.01, 0.47], y=[0.52, 0.98]),   # Spring  TL
+                1: dict(x=[0.53, 0.99], y=[0.52, 0.98]),   # Summer  TR
+                2: dict(x=[0.01, 0.47], y=[0.01, 0.47]),   # Autumn  BL
+                3: dict(x=[0.53, 0.99], y=[0.01, 0.47]),   # Winter  BR
+            }
+            POLAR_KEYS = ["polar","polar2","polar3","polar4"]
+            colors_wr  = ["#FFEE58","#FFA726","#EF5350","#B71C1C","#4A148C"]
+
+            fig4 = go.Figure()
+            polar_layout_kw = {}
+
             for idx, season in enumerate(SEASONS):
-                r, c = pos[idx]
-                sdf  = wind_df[wind_df["season"]==season]
+                sdf = wind_df[wind_df["season"]==season]
                 if len(sdf) < 10:
                     continue
+                pk  = POLAR_KEYS[idx]
+                dom = POLAR_DOMAINS[idx]
                 dir_bins   = np.linspace(0, 360, 17)
                 dir_labels = [f"{v:.0f}°" for v in (dir_bins[:-1]+dir_bins[1:])/2]
                 spd_max    = sdf["ws"].quantile(0.99)
@@ -1147,15 +1161,17 @@ with tabs[7]:
                 sdf["dir_bin"] = pd.cut(sdf["wd"], bins=dir_bins, labels=dir_labels, include_lowest=True)
                 sdf["spd_bin"] = pd.cut(sdf["ws"], bins=spd_bins, labels=spd_labels, include_lowest=True)
                 total = len(sdf)
+                n_sea = int(sdf["pollutant"].count()) if "pollutant" in sdf.columns else len(sdf)
                 for si, sl in enumerate(spd_labels):
-                    sub   = sdf[sdf["spd_bin"]==sl]
-                    cnts  = sub.groupby("dir_bin",observed=True).size().reindex(dir_labels,fill_value=0)
-                    n_sl  = int(cnts.sum())
-                    pct   = (cnts/total*100).values
+                    sub  = sdf[sdf["spd_bin"]==sl]
+                    cnts = sub.groupby("dir_bin",observed=True).size().reindex(dir_labels,fill_value=0)
+                    n_sl = int(cnts.sum())
+                    pct  = (cnts/total*100).values
                     fig4.add_trace(go.Barpolar(
                         r=pct, theta=dir_labels,
                         name=f"{sl} (n={n_sl:,})", legendgroup=sl,
                         showlegend=(idx==0),
+                        subplot=pk,
                         marker_color=colors_wr[si % len(colors_wr)],
                         marker_line_color="#0a1628", marker_line_width=0.5,
                         opacity=0.88,
@@ -1165,7 +1181,34 @@ with tabs[7]:
                             "<b>Freq:</b> %{r:.1f}%<br>"
                             f"<b>Speed:</b> {sl}<extra></extra>"
                         ),
-                    ), row=r, col=c)
+                    ))
+                # Per-subplot polar config with domain
+                polar_layout_kw[pk] = dict(
+                    domain=dom,
+                    bgcolor="#0d1f3c",
+                    angularaxis=dict(direction="clockwise",
+                                     tickfont=dict(color="#90CAF9",size=8),
+                                     gridcolor="#1a3a5c", linecolor="#1a3a5c"),
+                    radialaxis=dict(ticksuffix="%",
+                                    tickfont=dict(color="#90CAF9",size=7),
+                                    gridcolor="#1a3a5c", linecolor="#1a3a5c"),
+                )
+
+            # Season label annotations in the centre of each domain
+            seas_anns = []
+            for idx, season in enumerate(SEASONS):
+                dom = POLAR_DOMAINS[idx]
+                n_s = len(wind_df[wind_df["season"]==season])
+                cx  = (dom["x"][0]+dom["x"][1])/2
+                cy  = dom["y"][1] + 0.005      # just above the panel
+                seas_anns.append(dict(
+                    text=f"<b>{season}</b>  <sup>n={n_s:,}</sup>",
+                    x=cx, y=cy, xref="paper", yref="paper",
+                    showarrow=False,
+                    font=dict(color="#E0F7FA", size=13,
+                              family="Rajdhani,sans-serif"),
+                    xanchor="center", yanchor="bottom",
+                ))
 
             fig4.update_layout(
                 **PLOTLY_DARK_BASE,
@@ -1173,30 +1216,23 @@ with tabs[7]:
                     text=f"Seasonal Wind Roses – {wr_site}  "
                          f"<sup>Total N={len(wind_df):,}</sup>",
                     font=dict(color="#E0F7FA", family="Rajdhani,sans-serif", size=15)),
-                height=860,
-                margin=dict(t=80, b=20, l=20, r=20),
+                height=820,
+                margin=dict(t=60, b=10, l=10, r=10),
                 legend=dict(font=dict(color="#CFD8DC",size=9),
                             bgcolor="rgba(13,31,60,0.85)",
                             title=dict(text=f"Wind Speed ({wr_ws_unit})",
                                        font=dict(color="#00E5FF",size=10)),
-                            x=1.01, y=0.5),
+                            x=1.0, y=0.5, xanchor="left"),
+                annotations=seas_anns,
+                **polar_layout_kw,
             )
-            polar_style = dict(
-                bgcolor="#0d1f3c",
-                angularaxis=dict(direction="clockwise",
-                                 tickfont=dict(color="#90CAF9",size=8),
-                                 gridcolor="#1a3a5c", linecolor="#1a3a5c"),
-                radialaxis=dict(ticksuffix="%",
-                                tickfont=dict(color="#90CAF9",size=7),
-                                gridcolor="#1a3a5c", linecolor="#1a3a5c"),
-            )
-            for i in range(1,5):
-                pk = f"polar{'' if i==1 else i}"
-                fig4.update_layout(**{pk: polar_style})
-            for ann in fig4.layout.annotations:
-                ann.font = dict(color="#E0F7FA", family="Rajdhani,sans-serif", size=13)
-                ann.yshift = 8
             st.plotly_chart(fig4, use_container_width=True)
+            # ── Download wind rose seasonal ──────────────────────────────────
+            st.download_button(
+                "⬇️ Download Seasonal Wind Rose (HTML)",
+                data=fig4.to_html(include_plotlyjs="cdn", full_html=True).encode(),
+                file_name=f"windrose_seasonal_{wr_site}_{pd.Timestamp.now().date()}.html",
+                mime="text/html", key="dl_wr4")
     else:
         st.info("Configure wind parameters above and click **Generate Wind Roses**.")
 
@@ -1435,7 +1471,8 @@ with tabs[8]:
             arrowcolor="#00E5FF",
         ))
 
-        pad = ws_max * 1.18
+        # Tight equal-axis range – compass labels need ~10% padding beyond ws_max
+        pad = ws_max * 1.12
         fig.update_layout(
             **PLOTLY_DARK_BASE,
             title=dict(
@@ -1444,12 +1481,16 @@ with tabs[8]:
                       f"Stat: {stat_lbl} | N = {total_n:,} valid obs | "
                       f"Smoothing σ={smooth}</sup>"),
                 font=dict(color="#E0F7FA", family="Rajdhani,sans-serif", size=14)),
+            # Equal axes without scaleanchor (avoids blank strips):
+            # constrain="domain" keeps square within the plot area itself
             xaxis=dict(range=[-pad, pad], visible=False,
-                       scaleanchor="y", scaleratio=1),
-            yaxis=dict(range=[-pad, pad], visible=False),
+                       constrain="domain", automargin=False),
+            yaxis=dict(range=[-pad, pad], visible=False,
+                       scaleanchor="x", scaleratio=1,
+                       automargin=False),
             annotations=annotations,
             showlegend=False,
-            margin=dict(t=80, b=20, l=20, r=90),
+            margin=dict(t=60 if title else 10, b=10, l=10, r=100),
             height=fig_h,
         )
         return fig
@@ -1482,6 +1523,11 @@ with tabs[8]:
                 param_name=sel_param, fig_h=600,
             )
             st.plotly_chart(fig_overall, use_container_width=True)
+            st.download_button(
+                "⬇️ Download Overall Polar Plot (HTML)",
+                data=fig_overall.to_html(include_plotlyjs="cdn", full_html=True).encode(),
+                file_name=f"polarplot_{sel_param}_{pp_site}_{pd.Timestamp.now().date()}.html",
+                mime="text/html", key="dl_pp_overall")
 
             # ── Summary stats under overall plot ──────────────────────────────
             with st.expander("📊 Descriptive statistics for this polar dataset"):
@@ -1500,6 +1546,7 @@ with tabs[8]:
                 f"(2 × 2 Panel)")
 
             # Render 4 individual Plotly figures laid out in 2 rows of 2
+            seas_figs = {}   # store for combined download
             for row_idx in range(2):
                 cols_pair = st.columns(2, gap="small")
                 for col_idx in range(2):
@@ -1511,9 +1558,9 @@ with tabs[8]:
                             f"<div style='text-align:center;color:#E0F7FA;"
                             f"font-family:Rajdhani,sans-serif;font-size:15px;"
                             f"font-weight:700;padding:4px 0 2px 0;'>"
-                            f"{season} &nbsp;<span style='color:#78909C;"
-                            f"font-size:12px;font-weight:400;'>n={n_seas:,}</span>"
-                            f"</div>",
+                            f"<b>{season}</b>&nbsp;"
+                            f"<span style='color:#78909C;font-size:12px;"
+                            f"font-weight:400;'>n={n_seas:,}</span></div>",
                             unsafe_allow_html=True)
                         if n_seas < 20:
                             st.info(f"Not enough data for {season} (n={n_seas})")
@@ -1525,14 +1572,39 @@ with tabs[8]:
                                 n_grid=max(60, pp_n_grid - 20),
                                 smooth=pp_smooth,
                                 ws_unit=pp_ws_unit, poll_unit=pp_poll_unit,
-                                param_name=sel_param, fig_h=430,
+                                param_name=sel_param, fig_h=400,
                             )
-                            # Tighter margins for panel
                             fig_s.update_layout(
-                                margin=dict(t=20, b=10, l=10, r=70),
-                                title_text="",
+                                margin=dict(t=5, b=5, l=5, r=90),
+                                height=400,
                             )
+                            seas_figs[season] = fig_s
                             st.plotly_chart(fig_s, use_container_width=True)
+                            st.download_button(
+                                f"⬇️ {season} (HTML)",
+                                data=fig_s.to_html(include_plotlyjs="cdn",
+                                                   full_html=True).encode(),
+                                file_name=(f"polar_{sel_param}_{pp_site}_"
+                                           f"{season}_{pd.Timestamp.now().date()}.html"),
+                                mime="text/html",
+                                key=f"dl_pp_{season}")
+
+            # ── Combined seasonal HTML (all 4 in one file) ───────────────────
+            if seas_figs:
+                combined_html = "<html><head><style>body{background:#050d1a;}</style></head><body>"
+                first = True
+                for season, fig_c in seas_figs.items():
+                    h = fig_c.to_html(include_plotlyjs="cdn" if first else False,
+                                      full_html=False, div_id=f"pp_{season}")
+                    combined_html += (f"<h3 style='color:#E0F7FA;font-family:Rajdhani;"
+                                      f"text-align:center'>{season}</h3>{h}")
+                    first = False
+                combined_html += "</body></html>"
+                st.download_button(
+                    "⬇️ Download All 4 Seasonal Polar Plots (HTML)",
+                    data=combined_html.encode(),
+                    file_name=f"polar_{sel_param}_{pp_site}_seasonal_{pd.Timestamp.now().date()}.html",
+                    mime="text/html", key="dl_pp_seas_all")
     else:
         st.info("⬆️ Configure settings above and click **Generate Polar Plots**.")
 
@@ -1684,6 +1756,126 @@ with tabs[9]:
             file_name=f"raw_{sel_param}_{pd.Timestamp.now().date()}.csv",
             mime="text/csv",
             use_container_width=True)
+
+    # ── Plot downloads ────────────────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("### 📊 Download Charts as Interactive HTML")
+    st.markdown(
+        "<small style='color:#546E7A;'>Each chart is a standalone interactive "
+        "HTML file you can open in any browser or share with colleagues. "
+        "Charts are generated fresh from the current sidebar filters.</small>",
+        unsafe_allow_html=True)
+
+    def _fig_to_html(fig):
+        return fig.to_html(include_plotlyjs="cdn", full_html=True).encode()
+
+    def _ts_fig(y_col, avg_label, threshold, thresh_label):
+        fig = go.Figure()
+        for site, grp in enriched.groupby("Sitename"):
+            col = pal.get(site, "#00E5FF")
+            fig.add_trace(go.Scatter(
+                x=grp["datetime"], y=grp[y_col], mode="lines",
+                name=site, line=dict(color=col, width=1.2)))
+        xmn, xmx = enriched["datetime"].min(), enriched["datetime"].max()
+        fig.add_trace(go.Scatter(
+            x=[xmn, xmx], y=[threshold, threshold], mode="lines",
+            name=thresh_label, line=dict(color="#FF6B6B", dash="dash", width=2)))
+        return apply_dark(fig, f"{avg_label} – {sel_param}", "Date/Time", sel_param)
+
+    dl_cols = st.columns(3)
+
+    with dl_cols[0]:
+        st.markdown("**⏱ Time Series**")
+        if st.button("Build TS plots", key="bld_ts_dl", use_container_width=True):
+            f1 = _ts_fig("value",  "Hourly Average", thresh_1h, "1-hr Threshold")
+            f2 = _ts_fig("roll24", "24-hr Rolling Average", thresh_24h, "24-hr Threshold")
+            st.session_state["ts_html_1h"]  = _fig_to_html(f1)
+            st.session_state["ts_html_24h"] = _fig_to_html(f2)
+
+        if "ts_html_1h" in st.session_state:
+            st.download_button("⬇️ Hourly TS (HTML)",
+                data=st.session_state["ts_html_1h"],
+                file_name=f"ts_1h_{sel_param}_{pd.Timestamp.now().date()}.html",
+                mime="text/html", key="dl_ts_1h", use_container_width=True)
+        if "ts_html_24h" in st.session_state:
+            st.download_button("⬇️ 24-hr Rolling TS (HTML)",
+                data=st.session_state["ts_html_24h"],
+                file_name=f"ts_24h_{sel_param}_{pd.Timestamp.now().date()}.html",
+                mime="text/html", key="dl_ts_24h", use_container_width=True)
+
+    with dl_cols[1]:
+        st.markdown("**📈 Threshold & Exceedance**")
+        if st.button("Build Threshold plots", key="bld_thr_dl", use_container_width=True):
+            f3 = _ts_fig("value",  "1-hr vs Threshold", thresh_1h, "1-hr Limit")
+            f4 = _ts_fig("roll24", "24-hr vs Threshold", thresh_24h, "24-hr Limit")
+            for fig_x, ymax_col in [(f3,"value"),(f4,"roll24")]:
+                ymax_v = enriched[ymax_col].max(skipna=True)*1.05
+                fig_x.add_hrect(y0=thresh_1h if ymax_col=="value" else thresh_24h,
+                                y1=ymax_v, fillcolor="#FF6B6B", opacity=0.05, line_width=0)
+            st.session_state["thr_html_1h"]  = _fig_to_html(f3)
+            st.session_state["thr_html_24h"] = _fig_to_html(f4)
+
+        if "thr_html_1h" in st.session_state:
+            st.download_button("⬇️ 1-hr Threshold (HTML)",
+                data=st.session_state["thr_html_1h"],
+                file_name=f"thresh_1h_{sel_param}_{pd.Timestamp.now().date()}.html",
+                mime="text/html", key="dl_thr_1h", use_container_width=True)
+        if "thr_html_24h" in st.session_state:
+            st.download_button("⬇️ 24-hr Threshold (HTML)",
+                data=st.session_state["thr_html_24h"],
+                file_name=f"thresh_24h_{sel_param}_{pd.Timestamp.now().date()}.html",
+                mime="text/html", key="dl_thr_24h", use_container_width=True)
+
+    with dl_cols[2]:
+        st.markdown("**🕛 Temporal Patterns**")
+        if st.button("Build Temporal plots", key="bld_tmp_dl", use_container_width=True):
+            def _tmp(grp_col, order, x_label, title):
+                fig = go.Figure()
+                for site, grp in enriched.groupby("Sitename"):
+                    col = pal.get(site, "#00E5FF")
+                    agg = grp.groupby(grp_col)["value"].agg(
+                        Mean="mean", SD="std",
+                        P25=lambda x: x.quantile(.25),
+                        P75=lambda x: x.quantile(.75)).reset_index()
+                    agg[grp_col] = pd.Categorical(agg[grp_col].astype(str),
+                                                  categories=[str(o) for o in order], ordered=True)
+                    agg = agg.sort_values(grp_col)
+                    fig.add_trace(go.Scatter(
+                        x=list(agg[grp_col])+list(reversed(list(agg[grp_col]))),
+                        y=list(agg["P75"])+list(reversed(list(agg["P25"]))),
+                        fill="toself", fillcolor=hex_rgba(col,0.13),
+                        line=dict(width=0), showlegend=False, hoverinfo="skip"))
+                    fig.add_trace(go.Scatter(
+                        x=agg[grp_col], y=agg["Mean"], mode="lines+markers", name=site,
+                        line=dict(color=col, width=2), marker=dict(color=col, size=6),
+                        error_y=dict(array=agg["SD"], visible=True,
+                                     color=hex_rgba(col,0.53))))
+                fig.update_xaxes(categoryorder="array",
+                                 categoryarray=[str(o) for o in order])
+                return apply_dark(fig, title, x_label, sel_param)
+
+            f5 = _tmp("hod", range(24), "Hour of Day",
+                      f"Diurnal Pattern – {sel_param} (Mean±SD)")
+            f6 = _tmp("mon", MON_ORDER, "Month",
+                      f"Monthly Pattern – {sel_param} (Mean±SD)")
+            st.session_state["tmp_html_diurnal"] = _fig_to_html(f5)
+            st.session_state["tmp_html_monthly"] = _fig_to_html(f6)
+
+        if "tmp_html_diurnal" in st.session_state:
+            st.download_button("⬇️ Diurnal Pattern (HTML)",
+                data=st.session_state["tmp_html_diurnal"],
+                file_name=f"diurnal_{sel_param}_{pd.Timestamp.now().date()}.html",
+                mime="text/html", key="dl_tmp_diurnal", use_container_width=True)
+        if "tmp_html_monthly" in st.session_state:
+            st.download_button("⬇️ Monthly Pattern (HTML)",
+                data=st.session_state["tmp_html_monthly"],
+                file_name=f"monthly_{sel_param}_{pd.Timestamp.now().date()}.html",
+                mime="text/html", key="dl_tmp_monthly", use_container_width=True)
+
+    st.markdown(
+        "<small style='color:#37474F;'>💡 Wind Rose and Polar Plot downloads are "
+        "available directly beneath each chart in tabs 🌬️ and 🌀.</small>",
+        unsafe_allow_html=True)
 
 # ── Footer ────────────────────────────────────────────────────────────────────
 st.markdown("""
