@@ -1451,8 +1451,6 @@ with tabs[8]:
             showlegend=False,
             margin=dict(t=80, b=20, l=20, r=90),
             height=fig_h,
-            plot_bgcolor="#0a1628",
-            paper_bgcolor="#0a1628",
         )
         return fig
 
