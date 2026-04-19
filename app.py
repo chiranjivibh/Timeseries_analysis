@@ -132,7 +132,7 @@ def dl_row(fig, stem, dpi=200):
     png_b = fig_to_png(fig, dpi)
     pdf_b = fig_to_pdf(fig)
     # show the figure (closed already by fig_to_png so re-open from bytes)
-    st.image(png_b, width=None)   # native width, no stretch
+    st.image(png_b, width="content")
     c1, c2, _ = st.columns([1, 1, 6])
     c1.download_button("⬇️ PNG", data=png_b,
         file_name=f"{stem}.png", mime="image/png",
