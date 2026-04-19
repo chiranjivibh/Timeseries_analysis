@@ -128,19 +128,23 @@ def fig_to_pdf(fig):
     buf.seek(0)
     return buf.getvalue()
 
+_dl_call_count = {}  # unique key counter to avoid duplicate widget keys
+
 def dl_row(fig, stem, dpi=200):
     """Show figure then PNG + PDF download buttons side-by-side."""
+    # unique suffix in case same stem is rendered more than once per run
+    _dl_call_count[stem] = _dl_call_count.get(stem, 0) + 1
+    sfx  = f"{stem}_{_dl_call_count[stem]}"
     png_b = fig_to_png(fig, dpi)
     pdf_b = fig_to_pdf(fig)
-    # show the figure (closed already by fig_to_png so re-open from bytes)
     st.image(png_b, width="content")
     c1, c2, _ = st.columns([1, 1, 6])
     c1.download_button("⬇️ PNG", data=png_b,
         file_name=f"{stem}.png", mime="image/png",
-        use_container_width=False, key=f"png_{stem}")
+        use_container_width=False, key=f"png_{sfx}")
     c2.download_button("⬇️ PDF", data=pdf_b,
         file_name=f"{stem}.pdf", mime="application/pdf",
-        use_container_width=False, key=f"pdf_{stem}")
+        use_container_width=False, key=f"pdf_{sfx}")
 
 # ==============================================================================
 #  CONSTANTS / HELPERS
@@ -317,8 +321,10 @@ with st.sidebar:
     st.markdown("---")
     st.markdown('<span style="color:#00E5FF;font-size:12px;font-weight:600;">'
                 '🎨 EXPORT</span>', unsafe_allow_html=True)
-    fig_dpi = st.select_slider("PNG DPI", [100,150,200,300], value=200)
-    fig_w   = st.slider("Figure width (in)", 8, 18, 13)
+    fig_dpi  = st.select_slider("PNG DPI", [100,150,200,300], value=200)
+    fig_w    = st.slider("Figure width (in)", 8, 18, 13)
+    log_y    = st.checkbox("Y-axis: log scale", value=False,
+                  help="Switch all time-series and pattern charts to log₁₀ scale")
 
 # ==============================================================================
 #  CORE DATA
@@ -502,7 +508,9 @@ with tabs[2]:
                 ax.fill_between(enriched["datetime"],
                     threshold, ymax, color="#FF6B6B", alpha=0.05)
             ax.set_title(f"{avg_label} – {sel_param}")
-            ax.set_xlabel("Date / Time"); ax.set_ylabel(sel_param)
+            ax.set_xlabel("Date / Time")
+            if log_y: ax.set_yscale("log"); ax.set_ylabel(f"{sel_param} (log scale)")
+            else: ax.set_ylabel(sel_param)
             ax.legend(framealpha=0.6, fontsize=8)
             fig.tight_layout()
             return fig
@@ -519,68 +527,77 @@ with tabs[3]:
     st.markdown("### 📊 Descriptive Statistics")
 
     AGG_MAP = {
-        "Hour of Day" : ("hod",   [str(h) for h in range(24)],"Hour of Day"),
-        "Day of Week" : ("dow",   DOW_ORDER,                  "Day of Week"),
-        "Month"       : ("mon",   MON_ORDER,                  "Month"),
-        "Season"      : ("season",SEASONS,                    "Season"),
+        "Hour of Day" : ("hod",   [str(h) for h in range(24)], "Hour of Day"),
+        "Day of Week" : ("dow",   DOW_ORDER,                   "Day of Week"),
+        "Month"       : ("mon",   MON_ORDER,                   "Month"),
+        "Season"      : ("season",SEASONS,                     "Season"),
     }
-    agg_by = st.radio("Aggregate by",list(AGG_MAP.keys()),horizontal=True)
+    agg_by = st.radio("Aggregate by", list(AGG_MAP.keys()), horizontal=True)
     grp_col, order, x_label = AGG_MAP[agg_by]
-    enriched[grp_col] = enriched[grp_col].astype(str)
+
+    # Work on a LOCAL copy — never mutate the shared enriched dataframe
+    enr_s = enriched.copy()
+    enr_s[grp_col] = enr_s[grp_col].astype(str)
+    order_s = [str(o) for o in order]
+    order_v = [o for o in order_s if o in enr_s[grp_col].values]
 
     with st.expander("📋 Overall stats table"):
-        st.dataframe(describe_stats(enriched),use_container_width=False)
+        st.dataframe(describe_stats(enr_s), use_container_width=False)
 
     with st.expander("📋 Aggregated table"):
-        agg_tbl = (enriched.groupby(["Sitename",grp_col])["value"]
-                   .agg(N="count",Mean="mean",SD="std",Median="median",
-                        P25=lambda x:x.quantile(.25),
-                        P75=lambda x:x.quantile(.75),Max="max")
+        agg_tbl = (enr_s.groupby(["Sitename", grp_col])["value"]
+                   .agg(N="count", Mean="mean", SD="std", Median="median",
+                        P25=lambda x: x.quantile(.25),
+                        P75=lambda x: x.quantile(.75), Max="max")
                    .round(3).reset_index())
-        st.dataframe(agg_tbl,use_container_width=False)
+        st.dataframe(agg_tbl, use_container_width=False)
 
-    sites_sel = [s for s in sorted(sel_sites) if s in enriched["Sitename"].values]
+    sites_sel = [s for s in sorted(sel_sites) if s in enr_s["Sitename"].values]
     n_sites   = len(sites_sel)
-    order_v   = [o for o in order if str(o) in enriched[grp_col].values]
     n_cats    = len(order_v)
 
     def bv_fig(plot_type):
-        fig, ax = plt.subplots(figsize=(max(10,n_cats*0.65), 5))
-        w = 0.7/max(n_sites,1)
-        offsets = np.linspace(-0.35+w/2, 0.35-w/2, max(n_sites,1))
+        fig, ax = plt.subplots(figsize=(max(10, n_cats * 0.65), 5))
+        w = 0.7 / max(n_sites, 1)
+        offsets = np.linspace(-0.35 + w/2, 0.35 - w/2, max(n_sites, 1))
         for si, site in enumerate(sites_sel):
-            col  = pal.get(site,PALETTE[si])
-            grpd = enriched[enriched["Sitename"]==site]
-            data = [grpd[grpd[grp_col]==str(o)]["value"].dropna().values
+            col  = pal.get(site, PALETTE[si % len(PALETTE)])
+            grpd = enr_s[enr_s["Sitename"] == site]
+            data = [grpd[grpd[grp_col] == o]["value"].dropna().values
                     for o in order_v]
-            xs   = np.arange(n_cats)+offsets[si]
-            if plot_type=="box":
-                ax.boxplot(data, positions=xs, widths=w*0.85,
+            xs = np.arange(n_cats) + offsets[si]
+            if plot_type == "box":
+                ax.boxplot(data, positions=xs, widths=w * 0.85,
                            patch_artist=True,
-                           medianprops=dict(color="#fff",lw=1.5),
-                           whiskerprops=dict(color=col,lw=0.8),
-                           capprops=dict(color=col,lw=0.8),
-                           flierprops=dict(marker=".",color=col,ms=2,alpha=0.4),
-                           boxprops=dict(facecolor=col+"44",edgecolor=col,lw=0.9),
+                           medianprops=dict(color="#fff", lw=1.5),
+                           whiskerprops=dict(color=col, lw=0.8),
+                           capprops=dict(color=col, lw=0.8),
+                           flierprops=dict(marker=".", color=col, ms=2, alpha=0.4),
+                           boxprops=dict(facecolor=col + "44", edgecolor=col, lw=0.9),
                            showfliers=True)
             else:
-                for xi, (x, dat) in enumerate(zip(xs,data)):
-                    if len(dat)>3:
-                        vp = ax.violinplot([dat],positions=[x],widths=w*0.85,
-                                           showmedians=True,showextrema=False)
+                for x, dat in zip(xs, data):
+                    if len(dat) > 3:
+                        vp = ax.violinplot([dat], positions=[x], widths=w * 0.85,
+                                           showmedians=True, showextrema=False)
                         for pc in vp["bodies"]:
-                            pc.set_facecolor(col+"66")
+                            pc.set_facecolor(col + "66")
                             pc.set_edgecolor(col); pc.set_lw(0.8)
-                        vp["cmedians"].set_color("#fff")
-                        vp["cmedians"].set_lw(1.5)
-            ax.bar(0,0,color=col,alpha=0.7,label=site)  # legend proxy
+                        vp["cmedians"].set_color("#fff"); vp["cmedians"].set_lw(1.5)
+            ax.bar(0, 0, color=col, alpha=0.7, label=site)  # legend proxy
+
         ax.set_xticks(np.arange(n_cats))
         ax.set_xticklabels(order_v,
-            rotation=45 if n_cats>12 else 0,
-            ha="right" if n_cats>12 else "center",fontsize=8)
-        ax.set_title(f"{'Box' if plot_type=='box' else 'Violin'} – {sel_param} by {agg_by}")
-        ax.set_xlabel(x_label); ax.set_ylabel(sel_param)
-        ax.legend(framealpha=0.6,fontsize=8)
+            rotation=45 if n_cats > 12 else 0,
+            ha="right" if n_cats > 12 else "center", fontsize=8)
+        ax.set_title(
+            f"{'Box' if plot_type == 'box' else 'Violin'} – {sel_param} by {agg_by}")
+        ax.set_xlabel(x_label)
+        if log_y:
+            ax.set_yscale("log"); ax.set_ylabel(f"{sel_param} (log scale)")
+        else:
+            ax.set_ylabel(sel_param)
+        ax.legend(framealpha=0.6, fontsize=8)
         fig.tight_layout()
         return fig
 
@@ -610,9 +627,11 @@ with tabs[4]:
             if ymax>threshold:
                 ax.fill_between(enriched["datetime"],
                     threshold,ymax,color="#FF6B6B",alpha=0.07,label="Exceedance zone")
-            ax.set_ylim(bottom=0,top=ymax)
+            if not log_y: ax.set_ylim(bottom=0, top=ymax)
             ax.set_title(f"{avg_label} – {sel_param} vs Threshold")
-            ax.set_xlabel("Date / Time"); ax.set_ylabel(sel_param)
+            ax.set_xlabel("Date / Time")
+            if log_y: ax.set_yscale("log"); ax.set_ylabel(f"{sel_param} (log scale)")
+            else: ax.set_ylabel(sel_param)
             ax.legend(framealpha=0.6,fontsize=8)
             fig.tight_layout()
             return fig
@@ -649,30 +668,43 @@ with tabs[5]:
                      use_container_width=False)
 
         def exc_bar(grp_col, order, x_label, exc_col, title):
-            rows=[]
-            for site,grp in enriched.groupby("Sitename"):
-                for gv,sg in grp.groupby(grp_col):
-                    rows.append({"Site":site,"Group":str(gv),
-                                 "Count":int(sg[exc_col].sum())})
-            if not rows: return plt.figure()
+            # Use a local copy with the grouping column coerced to str
+            enr_e = enriched.copy()
+            enr_e[grp_col] = enr_e[grp_col].astype(str)
+            order_str = [str(o) for o in order]
+            rows = []
+            for site, grp in enr_e.groupby("Sitename"):
+                for gv, sg in grp.groupby(grp_col):
+                    rows.append({"Site": site, "Group": str(gv),
+                                 "Count": int(sg[exc_col].sum())})
+            if not rows:
+                fig, ax = plt.subplots(figsize=(6, 3))
+                ax.text(0.5, 0.5, "No exceedances", ha="center",
+                        va="center", transform=ax.transAxes, color=TEXT)
+                ax.set_title(title); fig.tight_layout(); return fig
             df2 = pd.DataFrame(rows)
             df2["Group"] = pd.Categorical(df2["Group"],
-                categories=[str(o) for o in order],ordered=True)
+                categories=order_str, ordered=True)
             df2 = df2.sort_values("Group")
-            pivot = df2.pivot(index="Group",columns="Site",values="Count").fillna(0)
-            n_s   = len(pivot.columns)
-            fig, ax = plt.subplots(figsize=(max(9,len(order)*0.5),4))
-            x  = np.arange(len(pivot.index)); w = 0.7/max(n_s,1)
-            for si,site in enumerate(pivot.columns):
-                off = (si-n_s/2+0.5)*w
-                ax.bar(x+off,pivot[site].values,w*0.9,
-                       color=pal.get(site,PALETTE[si]),alpha=0.85,label=site)
+            pivot = df2.pivot_table(index="Group", columns="Site",
+                                    values="Count", aggfunc="sum",
+                                    observed=True).fillna(0).reindex(order_str)
+            n_s = len(pivot.columns)
+            n_g = len(pivot.index)
+            fig, ax = plt.subplots(figsize=(max(9, n_g * 0.55), 4))
+            x = np.arange(n_g); w = 0.7 / max(n_s, 1)
+            for si, site in enumerate(pivot.columns):
+                off = (si - n_s/2 + 0.5) * w
+                ax.bar(x + off, pivot[site].values, w * 0.9,
+                       color=pal.get(site, PALETTE[si % len(PALETTE)]),
+                       alpha=0.85, label=site)
             ax.set_xticks(x)
             ax.set_xticklabels(pivot.index,
-                rotation=45 if len(order)>10 else 0,
-                ha="right" if len(order)>10 else "center",fontsize=8)
-            ax.set_title(title); ax.set_xlabel(x_label); ax.set_ylabel("# Exceedances")
-            ax.legend(framealpha=0.6,fontsize=8)
+                rotation=45 if n_g > 10 else 0,
+                ha="right" if n_g > 10 else "center", fontsize=8)
+            ax.set_title(title); ax.set_xlabel(x_label)
+            ax.set_ylabel("# Exceedances")
+            ax.legend(framealpha=0.6, fontsize=8)
             fig.tight_layout(); return fig
 
         def pct_bar(col_y, title):
@@ -713,63 +745,149 @@ with tabs[5]:
 with tabs[6]:
     st.markdown("### ⏰ Temporal Patterns")
 
+    def _apply_yscale(ax):
+        """Apply log or linear y-scale based on sidebar toggle."""
+        if log_y:
+            ax.set_yscale("log")
+            ax.set_ylabel(f"{sel_param} (log scale)")
+        else:
+            ax.set_ylabel(sel_param)
+
     def temporal_fig(grp_col, order, x_label, title):
-        enriched[grp_col] = enriched[grp_col].astype(str)
+        # ── Work on a COPY so enriched is never mutated ──────────────────────
+        df_tmp  = enriched.copy()
         order_s = [str(o) for o in order]
+        # Convert grouping column to string in the local copy only
+        df_tmp[grp_col] = df_tmp[grp_col].astype(str)
+
         fig, ax = plt.subplots(figsize=(fig_w, 4.5))
-        for site, grp in enriched.groupby("Sitename"):
-            col = pal.get(site,PALETTE[0])
+        for site, grp in df_tmp.groupby("Sitename"):
+            col = pal.get(site, PALETTE[0])
             agg = (grp.groupby(grp_col)["value"]
-                   .agg(Mean="mean",SD="std",
-                        P25=lambda v:v.quantile(.25),
-                        P75=lambda v:v.quantile(.75))
+                   .agg(Mean="mean", SD="std",
+                        P25=lambda v: v.quantile(.25),
+                        P75=lambda v: v.quantile(.75))
                    .reindex(order_s))
             xi = np.arange(len(order_s))
-            ax.fill_between(xi,agg["P25"].values,agg["P75"].values,
-                            color=col,alpha=0.12)
-            ax.errorbar(xi,agg["Mean"].values,yerr=agg["SD"].values,
-                        color=col,lw=1.8,marker="o",ms=4,
-                        capsize=3,capthick=0.8,elinewidth=0.8,label=site)
+            # IQR ribbon (skip on log scale if values ≤ 0)
+            p25 = np.where(agg["P25"].values > 0, agg["P25"].values, np.nan)
+            p75 = np.where(agg["P75"].values > 0, agg["P75"].values, np.nan)
+            ax.fill_between(xi, p25, p75, color=col, alpha=0.12)
+            # Mean ± SD error bars
+            means = agg["Mean"].values
+            sds   = agg["SD"].values
+            ax.errorbar(xi, means, yerr=sds,
+                        color=col, lw=1.8, marker="o", ms=4,
+                        capsize=3, capthick=0.8, elinewidth=0.8, label=site)
         ax.set_xticks(np.arange(len(order_s)))
         ax.set_xticklabels(order_s,
-            rotation=45 if len(order_s)>12 else 0,
-            ha="right" if len(order_s)>12 else "center",fontsize=8)
-        ax.set_title(title); ax.set_xlabel(x_label); ax.set_ylabel(sel_param)
-        ax.legend(framealpha=0.6,fontsize=8)
-        fig.tight_layout(); return fig
+            rotation=45 if len(order_s) > 12 else 0,
+            ha="right" if len(order_s) > 12 else "center", fontsize=8)
+        ax.set_title(title); ax.set_xlabel(x_label)
+        _apply_yscale(ax)
+        ax.legend(framealpha=0.6, fontsize=8)
+        fig.tight_layout()
+        return fig
 
     st.markdown("#### 🕛 Diurnal Pattern")
-    dl_row(temporal_fig("hod",range(24),"Hour of Day",
+    dl_row(temporal_fig("hod", range(24), "Hour of Day",
                         f"Diurnal – {sel_param} (Mean±SD, IQR)"),
-           f"diurnal_{sel_param}_{today}",fig_dpi)
+           f"diurnal_{sel_param}_{today}", fig_dpi)
 
     st.markdown("#### 📅 Monthly Pattern")
-    dl_row(temporal_fig("mon",MON_ORDER,"Month",
+    dl_row(temporal_fig("mon", MON_ORDER, "Month",
                         f"Monthly – {sel_param} (Mean±SD, IQR)"),
-           f"monthly_{sel_param}_{today}",fig_dpi)
+           f"monthly_{sel_param}_{today}", fig_dpi)
 
-    # Seasonal 2×2 diurnal
+    # ── Seasonal 2×2 diurnal ─────────────────────────────────────────────────
     st.markdown("#### 🍂 Seasonal Diurnal – 2×2")
-    enriched["season"] = get_season(enriched["datetime"])
-    fig_sd, axes_sd = plt.subplots(2,2,figsize=(fig_w,8),sharey=True)
-    fig_sd.suptitle(f"Seasonal Diurnal – {sel_param}",fontsize=13,
-                    color="#E0F7FA",fontweight="bold")
-    for idx,(season,ax) in enumerate(zip(SEASONS,axes_sd.flat)):
-        sdf = enriched[enriched["season"]==season]
+
+    # Compute season on a fresh copy – do NOT modify enriched in-place
+    df_seas = enriched.copy()
+    df_seas["season"] = get_season(df_seas["datetime"])
+    # Keep hod as integer for correct groupby + reindex
+    df_seas["hod_int"] = df_seas["datetime"].dt.hour
+
+    fig_sd, axes_sd = plt.subplots(2, 2, figsize=(fig_w, 8), sharey=True)
+    fig_sd.suptitle(f"Seasonal Diurnal – {sel_param}", fontsize=13,
+                    color="#E0F7FA", fontweight="bold")
+    hours = list(range(24))
+    for idx, (season, ax) in enumerate(zip(SEASONS, axes_sd.flat)):
+        sdf = df_seas[df_seas["season"] == season]
         n_s = int(sdf["value"].count())
+        has_data = False
         for site, grp in sdf.groupby("Sitename"):
-            col = pal.get(site,PALETTE[0])
-            agg = grp.groupby("hod")["value"].agg(Mean="mean",SD="std").reindex(range(24))
-            ax.fill_between(agg.index,(agg["Mean"]-agg["SD"]).values,
-                            (agg["Mean"]+agg["SD"]).values,color=col,alpha=0.15)
-            ax.plot(agg.index,agg["Mean"].values,color=col,lw=1.6,
-                    marker="o",ms=3,label=site)
-        ax.set_title(f"{season}  n={n_s:,}",fontsize=10)
-        ax.set_xlabel("Hour" if idx>=2 else "")
-        ax.set_ylabel(sel_param if idx%2==0 else "")
-        ax.set_xticks(range(0,24,3)); ax.legend(framealpha=0.5,fontsize=7)
+            col = pal.get(site, PALETTE[0])
+            # Group by integer hour, reindex with integer list → no dtype mismatch
+            agg = (grp.groupby("hod_int")["value"]
+                   .agg(Mean="mean", SD="std")
+                   .reindex(hours))
+            if agg["Mean"].notna().sum() == 0:
+                continue
+            has_data = True
+            lo = (agg["Mean"] - agg["SD"]).values
+            hi = (agg["Mean"] + agg["SD"]).values
+            if log_y:
+                lo = np.where(lo > 0, lo, np.nan)
+                hi = np.where(hi > 0, hi, np.nan)
+            ax.fill_between(hours, lo, hi, color=col, alpha=0.15)
+            ax.plot(hours, agg["Mean"].values, color=col,
+                    lw=1.6, marker="o", ms=3, label=site)
+        if not has_data:
+            ax.text(0.5, 0.5, f"No data for {season}",
+                    ha="center", va="center",
+                    transform=ax.transAxes, color=TEXT, fontsize=9)
+        ax.set_title(f"{season}  n={n_s:,}", fontsize=10)
+        ax.set_xlabel("Hour of Day" if idx >= 2 else "")
+        if idx % 2 == 0:
+            _apply_yscale(ax)
+        ax.set_xticks(range(0, 24, 3))
+        ax.legend(framealpha=0.5, fontsize=7)
     fig_sd.tight_layout()
-    dl_row(fig_sd,f"seas_diurnal_{sel_param}_{today}",fig_dpi)
+    dl_row(fig_sd, f"seas_diurnal_{sel_param}_{today}", fig_dpi)
+
+    # ── Seasonal Monthly pattern 2×2 ─────────────────────────────────────────
+    st.markdown("#### 📆 Seasonal Monthly – 2×2")
+    fig_sm4, axes_sm4 = plt.subplots(2, 2, figsize=(fig_w, 8), sharey=True)
+    fig_sm4.suptitle(f"Seasonal Monthly – {sel_param}", fontsize=13,
+                     color="#E0F7FA", fontweight="bold")
+    for idx, (season, ax) in enumerate(zip(SEASONS, axes_sm4.flat)):
+        sdf = df_seas[df_seas["season"] == season]
+        n_s = int(sdf["value"].count())
+        has_data = False
+        for site, grp in sdf.groupby("Sitename"):
+            col = pal.get(site, PALETTE[0])
+            grp2 = grp.copy()
+            grp2["mon_str"] = grp2["datetime"].dt.strftime("%b")
+            agg = (grp2.groupby("mon_str")["value"]
+                   .agg(Mean="mean", SD="std")
+                   .reindex(MON_ORDER))
+            if agg["Mean"].notna().sum() == 0:
+                continue
+            has_data = True
+            xi = np.arange(len(MON_ORDER))
+            lo = (agg["Mean"] - agg["SD"]).values
+            hi = (agg["Mean"] + agg["SD"]).values
+            if log_y:
+                lo = np.where(lo > 0, lo, np.nan)
+                hi = np.where(hi > 0, hi, np.nan)
+            ax.fill_between(xi, lo, hi, color=col, alpha=0.15)
+            ax.plot(xi, agg["Mean"].values, color=col,
+                    lw=1.6, marker="o", ms=3, label=site)
+        if not has_data:
+            ax.text(0.5, 0.5, f"No data for {season}",
+                    ha="center", va="center",
+                    transform=ax.transAxes, color=TEXT, fontsize=9)
+        ax.set_title(f"{season}  n={n_s:,}", fontsize=10)
+        ax.set_xticks(range(len(MON_ORDER)))
+        ax.set_xticklabels(MON_ORDER, fontsize=7,
+                           rotation=45, ha="right")
+        ax.set_xlabel("Month" if idx >= 2 else "")
+        if idx % 2 == 0:
+            _apply_yscale(ax)
+        ax.legend(framealpha=0.5, fontsize=7)
+    fig_sm4.tight_layout()
+    dl_row(fig_sm4, f"seas_monthly_{sel_param}_{today}", fig_dpi)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TAB 7 – WIND ROSE
