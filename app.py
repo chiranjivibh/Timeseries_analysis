@@ -17,6 +17,7 @@ import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
 from matplotlib.colors import Normalize
 from scipy.ndimage import gaussian_filter
 import streamlit as st
