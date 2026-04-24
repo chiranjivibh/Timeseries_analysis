@@ -235,7 +235,7 @@ def detect_and_combine_datetime(df):
 def make_demo_data():
     rng = np.random.default_rng(42)
     sites  = ["Site_A","Site_B","Site_C"]
-    params = ["H2S","Ozone","NOx","WindSpeed","WindDirection"]
+    params = ["PM2.5","Ozone","NOx","WindSpeed","WindDirection"]
     dts    = pd.date_range("2022-01-01","2023-12-31 23:00",freq="h",tz="UTC")
     n      = len(dts)
     doy    = dts.day_of_year.values; hod = dts.hour.values
@@ -246,7 +246,7 @@ def make_demo_data():
     for site in sites:
         so = off[site]
         for param in params:
-            if   param=="H2S":
+            if   param=="PM2.5":
                 v = 5+so*.6+3*seas+2*diur+rng.normal(0,1.8,n)
                 sp = rng.random(n)<0.02; v[sp]+=rng.exponential(12,sp.sum())
                 v  = np.maximum(0,v)
